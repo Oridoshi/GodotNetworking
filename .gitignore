@@ -1,6 +1,9 @@
 # Created by https://www.toptal.com/developers/gitignore/api/c++,godot,macos,windows,linux
 # Edit at https://www.toptal.com/developers/gitignore?templates=c++,godot,macos,windows,linux
 
+#Custom
+.godot_bin
+
 ### C++ ###
 # Prerequisites
 *.d

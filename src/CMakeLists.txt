@@ -1,2 +1,3 @@
-add_subdirectory(godot-cpp)
-add_subdirectory(network)
+#add_subdirectory(libuv)
+add_subdirectory(game)
+add_subdirectory(server)
