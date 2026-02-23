@@ -3,6 +3,10 @@ extends CharacterBody2D
 
 const SPEED = 300
 @onready var Sprite = $AnimatedSprite2D
+@onready var NetManager = $"../../../../GDNetworkManager"
+
+func _ready() -> void:
+	NetManager.sendToServer(NetManager.PacketType.LOGIN, SerializeData())
 
 func _physics_process(delta: float) -> void:
 
@@ -15,6 +19,7 @@ func _physics_process(delta: float) -> void:
 	AnimationHandle(direction)
 	RotationHandle(direction)
 	MoveHandle(direction)
+	DataToServerHanlde(direction)
 	
 	move_and_slide()
 
@@ -44,3 +49,20 @@ func AnimationHandle (direction: Vector2) -> void:
 		Sprite.play("Idle")
 	else :
 		Sprite.play("Walk")
+
+func DataToServerHanlde (direction: Vector2) -> void:
+	var bNeedToSend = false
+	if direction.x > 0 or direction.x < 0 or direction.y > 0 or direction.y < 0 :
+		bNeedToSend = true
+	
+	if(bNeedToSend):
+		NetManager.sendToServer(NetManager.PacketType.VECTOR, SerializeData())
+
+func SerializeData() -> PackedByteArray:
+	var spb = StreamPeerBuffer.new()
+	
+	# Il gère le curseur et la taille tout seul
+	spb.put_u32(int(position.x))
+	spb.put_u32(int(position.y))
+	
+	return spb.data_array

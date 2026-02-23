@@ -35,5 +35,7 @@ tile_set = ExtResource("1_0wfyh")
 [node name="Misc" type="TileMapLayer" parent="Game/Map" unique_id=178488648]
 tile_set = ExtResource("1_0wfyh")
 
-[node name="Player" parent="Game/Map" unique_id=821549 instance=ExtResource("1_o5qli")]
-position = Vector2(-8, 21)
+[node name="PlayerManager" type="Node" parent="Game/Map" unique_id=1634572765]
+
+[node name="Player" parent="Game/Map/PlayerManager" unique_id=821549 instance=ExtResource("1_o5qli")]
+position = Vector2(-5, 6)

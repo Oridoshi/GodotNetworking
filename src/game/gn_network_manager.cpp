@@ -1,5 +1,8 @@
 #include "gn_network_manager.h"
+
+#include <string>
 #include <godot_cpp/core/class_db.hpp>
+#include "protocol.hpp"
 
 using namespace godot;
 
@@ -28,7 +31,28 @@ struct WSASocketInitializer
 static WSASocketInitializer g_wsa_init;
 #endif
 
-bool GDNetworkManager::bind_port(int port)
+void INFO(String msg)
+{
+    UtilityFunctions::print("[INFO] ", msg);
+}
+
+void INFO_SERVER(String msg, String sender_ip, int sender_port, PacketType type)
+{
+    String type_str;
+    switch (type) {
+        case PacketType::LOGIN: type_str = "LOGIN"; break;
+        case PacketType::VECTOR: type_str = "VECTOR"; break;
+        case PacketType::ROTATOR: type_str = "ROTATOR"; break;
+        case PacketType::INT: type_str = "INT"; break;
+        case PacketType::STRING: type_str = "STRING"; break;
+        case PacketType::LOGOUT: type_str = "LOGOUT"; break;
+        default: type_str = "UNKNOWN"; break;
+    }
+
+    UtilityFunctions::print("[INFO SERVER] ", msg, " | From: ", sender_ip, ":", sender_port, " | Type: ", type_str);
+}
+
+bool GDNetworkManager::bind_port()
 {
     _close_socket(); // Close any existing socket before creating a new one to ensure we don't have multiple sockets open at the same time.
 
@@ -44,41 +68,41 @@ bool GDNetworkManager::bind_port(int port)
     sockaddr_in server_addr;
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY; // Listen on all available interfaces
-    server_addr.sin_port = htons(port); // Convert port to network byte order
+    server_addr.sin_port = htons(0); // Convert port to network byte order
 
     // Bind the socket to the specified port
     if (bind(udp_socket, (sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
-        UtilityFunctions::printerr("Failed to bind the socket to port : ", port);
+        UtilityFunctions::printerr("Failed to bind the socket to port : ", 0);
         _close_socket();
         return false;
     }
 
-    UtilityFunctions::print("Socket successfully bound to port : ", port);
+    INFO("Socket successfully bound to port : " + String::num_int64(ntohs(server_addr.sin_port)));
     return true;
 }
 
-void GDNetworkManager::send_packet(String ip, int port, PackedByteArray data) {
+void GDNetworkManager::send_packet(int type, PackedByteArray data) {
     if (udp_socket == INVALID_SOCKET) {
         UtilityFunctions::printerr("Socket is not initialized. Please bind to a port first.");
         return;
     }
 
-    if (data.is_empty()) {
-        UtilityFunctions::print("Skipping empty packet.");
+    if (data.is_empty() && type != static_cast<int>(PacketType::LOGOUT)) {
+        INFO("Skipping empty packet.");
         return;
     }
 
     sockaddr_in dest_addr;
     memset(&dest_addr, 0, sizeof(dest_addr)); // Initialisation propre
     dest_addr.sin_family = AF_INET;
-    dest_addr.sin_port = htons(static_cast<uint16_t>(port));
+    dest_addr.sin_port = htons(static_cast<uint16_t>(server_port));
 
     // Conversion de l'IP avec vérification
-    CharString ip_utf8 = ip.utf8();
+    CharString ip_utf8 = server_ip.utf8();
     int pton_res = inet_pton(AF_INET, ip_utf8.get_data(), &dest_addr.sin_addr);
 
     if (pton_res <= 0) {
-        UtilityFunctions::printerr("Invalid IP address: ", ip);
+        UtilityFunctions::printerr("Invalid IP address: ", server_ip);
         return;
     }
 
@@ -86,7 +110,20 @@ void GDNetworkManager::send_packet(String ip, int port, PackedByteArray data) {
     const uint8_t* raw_data = data.ptr();
     size_t data_len = data.size();
 
-    ssize_t sent_len = sendto(udp_socket, reinterpret_cast<const char*>(raw_data),
+    //ajout de l'id en premier
+    uint32_t id = idForServer;
+    std::vector<char> packet_data;
+    packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&id), reinterpret_cast<char*>(&id) + sizeof(uint32_t));
+
+    //ajout du type du packet
+    packet_data.insert(packet_data.end(), static_cast<char>(type));
+
+    //ajout des données du packet
+    packet_data.insert(packet_data.end(), raw_data, raw_data + data_len);
+
+    data_len = packet_data.size();
+
+    ssize_t sent_len = sendto(udp_socket, packet_data.data(),
                               static_cast<int>(data_len), 0,
                               (sockaddr*)&dest_addr, sizeof(dest_addr));
 
@@ -96,9 +133,9 @@ void GDNetworkManager::send_packet(String ip, int port, PackedByteArray data) {
         #else
                 int err = errno;
         #endif
-        UtilityFunctions::printerr("Failed to send packet to ", ip, ":", port, " | Error code: ", err);
+        UtilityFunctions::printerr("Failed to send packet to ", server_ip, ":", server_port, " | Error code: ", err);
     } else {
-        UtilityFunctions::print("Packet sent (", sent_len, " bytes) to ", ip_utf8, ":", port);
+        UtilityFunctions::print("Packet sent (", sent_len, " bytes) to ", ip_utf8, ":", server_port);
     }
 }
 
@@ -126,13 +163,8 @@ void GDNetworkManager::_set_non_blocking(socket_t sock) {
 }
 
 void GDNetworkManager::_bind_methods() {
-    // Enregistrement de la méthode bind_port
-    // D_METHOD prend le nom de la fonction côté Godot, puis le nom des arguments
-    ClassDB::bind_method(D_METHOD("bind_port", "port"), &GDNetworkManager::bind_port);
-
     // Enregistrement de send_packet
-    ClassDB::bind_method(D_METHOD("send_packet", "ip", "port", "data"), &GDNetworkManager::send_packet);
-
+    ClassDB::bind_method(D_METHOD("send_packet", "data"), &GDNetworkManager::send_packet);
 }
 
 bool GDNetworkManager::poll()
@@ -149,14 +181,85 @@ bool GDNetworkManager::poll()
     ssize_t recv_len = recvfrom(udp_socket, buffer, sizeof(buffer), 0, (sockaddr*)&client_addr, &addr_len);
     if (recv_len > 0)
     {
-        // On convertit le buffer brut en String Godot
-        String message_contenu = String::utf8(buffer, (int)recv_len);
+        /************* Form Packet *************/
+        /* ID (type uint32_t) | Packet Type (type int) | Data (type vector<char>) */
 
-        String sender_ip = inet_ntoa(client_addr.sin_addr);
-        int sender_port = ntohs(client_addr.sin_port);
+        Packet pkt;
+        pkt.sender = client_addr;
+        pkt.data.assign(buffer, buffer + recv_len);
+        UtilityFunctions::print("Packet received from ", inet_ntoa(client_addr.sin_addr), ":", ntohs(client_addr.sin_port), " | Size: ", recv_len, " bytes");
 
-        UtilityFunctions::print(">> RECU de ", sender_ip, ":", sender_port, " | Contenu: ", message_contenu);
-        return true;
+        //sender
+        std::string sender_ip = inet_ntoa(pkt.sender.sin_addr);
+        int sender_port = ntohs(pkt.sender.sin_port);
+
+        // ID
+        uint32_t client_id = 0;
+        std::memcpy(&client_id, pkt.data.data(), sizeof(uint32_t));
+
+        //Packet Type
+        PacketType type = static_cast<PacketType>(pkt.data[sizeof(uint32_t)]);
+
+        if (type < PacketType::LOGIN || type > PacketType::LOGOUT)
+        {
+            UtilityFunctions::printerr("Received packet with unknown type from ", sender_ip.c_str(), ":", sender_port);
+            return false;
+        }
+
+        std::vector<char> dataWithoutPacketTypeAndClientID(pkt.data.begin() + sizeof(uint32_t) + 1, pkt.data.end());
+
+        if (type == PacketType::LOGIN)
+        {
+            idForServer = client_id;
+
+            INFO_SERVER("Server send ID info, my id is " + String::num_int64(client_id), sender_ip.c_str(), sender_port, type);
+        }
+        else if (type == PacketType::VECTOR)
+        {
+            //mise à jour location du joueur
+            int x, y;
+
+            // on recupère X (4 premiers octets)
+            std::memcpy(&x, dataWithoutPacketTypeAndClientID.data(), sizeof(int));
+
+            // on recupère Y (4 octets suivants)
+            std::memcpy(&y, dataWithoutPacketTypeAndClientID.data() + sizeof(int), sizeof(int));
+
+            if (client_id != idForServer)
+            {
+                INFO_SERVER("Received position update from another client " + String::num_int64(client_id) + " | New position: (" + String::num(x) + ", " + String::num(y) + ")", sender_ip.c_str(), sender_port, type);
+
+                if (client_id_to_node.find(client_id) != client_id_to_node.end())
+                {
+                    Node* node = client_id_to_node[client_id];
+                    if (node)
+                    {
+                        // On suppose que les nodes ont une méthode set_position(Vector2) pour mettre à jour leur position
+                        Variant pos = Vector2(x, y);
+                        node->call("set_position", pos);
+                    }
+                    else
+                    {
+                        UtilityFunctions::printerr("Node for client ID ", String::num_int64(client_id), " is null.");
+                    }
+                }
+                else
+                {
+                    INFO("Received position update for unknown client ID creating a new node for it.");
+                    // Création d'un nouveau node pour ce client
+                    Variant result = call("register_node");
+                    Node* newNode = Object::cast_to<Node>(result);
+                    client_id_to_node[client_id] = newNode;
+                    // On suppose que les nodes ont une méthode set_position(Vector2) pour mettre à jour leur position
+                    Variant pos = Vector2(x, y);
+                    newNode->call("set_position", pos);
+                }
+            }
+            else
+            {
+                INFO_SERVER("Received position update from Server on the client " + String::num_int64(client_id) + " | New position: (" + String::num(x) + ", " + String::num(y) + ")", sender_ip.c_str(), sender_port, type);
+            }
+        }
     } else if (recv_len == 0) {
         // Connection closed by the peer
         UtilityFunctions::print("Connection closed by peer");
@@ -176,6 +279,20 @@ bool GDNetworkManager::poll()
     return false;
 }
 
+void GDNetworkManager::_logout()
+{
+    if (udp_socket != INVALID_SOCKET)
+    {
+        // Envoi d'un packet de logout au serveur avant de fermer le socket
+        PackedByteArray empty_data; // Pas de données nécessaires pour le logout
+        send_packet(static_cast<int>(PacketType::LOGOUT), empty_data);
+    }
+    else
+    {
+        UtilityFunctions::printerr("Cannot send logout packet because the socket is not initialized.");
+    }
+}
+
 GDNetworkManager::GDNetworkManager()
 {
     // Initialize any variables here.
@@ -183,6 +300,8 @@ GDNetworkManager::GDNetworkManager()
 
 GDNetworkManager::~GDNetworkManager()
 {
+    _logout();
+
     // Add your cleanup here.
     _close_socket();
 }
@@ -190,5 +309,13 @@ GDNetworkManager::~GDNetworkManager()
 void GDNetworkManager::_process(double delta)
 {
     // Add tick computation there
-    while (poll());
+    while (poll()) {
+        // Process all incoming packets until there are no more to process
+    }
+}
+
+void GDNetworkManager::_ready() {
+    Node::_ready();
+
+    bind_port();
 }

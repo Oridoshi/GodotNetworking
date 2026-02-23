@@ -1,12 +1,22 @@
 extends GDNetworkManager
+@onready var PlayerManager = $"../Game/Map/PlayerManager"
+# On précharge la scène pour la performance
+const PLAYER_SCENE = preload("res://GodotNet/player_dist.tscn")
 
-const PORT = 5252
-const IP_TO_SEND = "127.0.0.1"
-const MESSAGE = "HELLO WORLD!"
+enum PacketType {
+	LOGIN   = 0,
+	VECTOR  = 1,
+	ROTATOR = 2,
+	INT     = 3,
+	STRING  = 4,
+	LOGOUT  = 5
+}
 
-# Called when the node enters the scene tree for the first time.
-func _ready() -> void:
-	bind_port(PORT)
+func sendToServer(type: PacketType, data: PackedByteArray):
+	send_packet(type, data);
+
+func register_node () -> Node:
+	var newPlayer = PLAYER_SCENE.instantiate()
+	PlayerManager.add_child(newPlayer)
 	
-	var data = PackedByteArray(MESSAGE.to_ascii_buffer())
-	send_packet(IP_TO_SEND, PORT, data)
+	return newPlayer

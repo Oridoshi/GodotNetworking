@@ -3,6 +3,7 @@
 
 #Custom
 .godot_bin
+.idea
 
 ### C++ ###
 # Prerequisites
