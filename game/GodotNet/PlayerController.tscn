@@ -1,0 +1,11 @@
+[gd_scene format=3 uid="uid://c5qljkkb5w6b6"]
+
+[ext_resource type="Script" uid="uid://d3c00fglvbhha" path="res://GodotNet/script/player_controller.gd" id="1_rgh11"]
+[ext_resource type="PackedScene" uid="uid://buunuly30yk06" path="res://GodotNet/player.tscn" id="2_01x4n"]
+
+[node name="PlayerController" type="Node2D" unique_id=1541866206]
+script = ExtResource("1_rgh11")
+
+[node name="Player" parent="." unique_id=821549 instance=ExtResource("2_01x4n")]
+
+[node name="Camera2D" type="Camera2D" parent="Player" unique_id=510598500]

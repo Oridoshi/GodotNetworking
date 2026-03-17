@@ -26,10 +26,7 @@ void INFO_FROM_CLIENT(std::string msg, std::string sender_ip, int sender_port, P
     std::string type_str;
     switch (type) {
         case PacketType::LOGIN: type_str = "LOGIN"; break;
-        case PacketType::VECTOR: type_str = "VECTOR"; break;
-        case PacketType::ROTATOR: type_str = "ROTATOR"; break;
-        case PacketType::INT: type_str = "INT"; break;
-        case PacketType::STRING: type_str = "STRING"; break;
+        case PacketType::INPUT: type_str = "INPUT"; break;
         case PacketType::LOGOUT: type_str = "LOGOUT"; break;
         default: type_str = "UNKNOWN"; break;
     }
@@ -284,69 +281,154 @@ void read_incoming_packet()
 
         std::vector<char> dataWithoutPacketTypeAndClientID(pkt.data.begin() + sizeof(uint32_t) + 1, pkt.data.end());
 
-        if (type == PacketType::LOGIN)
+        switch (type)
         {
-            INFO_FROM_CLIENT("New client connected", sender_ip, sender_port, type);
-
-            entt::entity new_entity = registry->create();
-            INFO("Added new client to the registry: " + std::to_string(static_cast<uint32_t>(new_entity)));
-            clients[idPlayerStatic++] = new_entity;
-
-            //ajout des location du joueur
-            int x, y;
-
-            // on recupère X (4 premiers octets)
-            std::memcpy(&x, dataWithoutPacketTypeAndClientID.data(), sizeof(int));
-
-            // on recupère Y (4 octets suivants)
-            std::memcpy(&y, dataWithoutPacketTypeAndClientID.data() + sizeof(int), sizeof(int));
-
-            //set connection info
-            registry->emplace<PlayerConnectionInfo>(new_entity, sender_ip, sender_port);
-            
-            //set inital location
-            registry->emplace<Location>(new_entity, x, y, true);
-
-            //print la position du joueur
-            INFO("Initial position of the new player: (" + std::to_string(x) + ", " + std::to_string(y) + ")");
-
-            //envois de l'id au joueur
-            std::vector<char> packet_data;
-            uint32_t client_id = idPlayerStatic - 1; // L'id du client est l'id de l'entité dans le registre, qui correspond à idPlayerStatic - 1
-            packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&client_id), reinterpret_cast<char*>(&client_id) + sizeof(uint32_t));
-            send_packet(PacketType::LOGIN, client_id, sender_ip, sender_port, packet_data);
-        }
-
-        if (type == PacketType::VECTOR)
-        {
-            //mise à jour location du joueur
-            int x, y;
-
-            // on recupère X (4 premiers octets)
-            std::memcpy(&x, dataWithoutPacketTypeAndClientID.data(), sizeof(int));
-
-            // on recupère Y (4 octets suivants)
-            std::memcpy(&y, dataWithoutPacketTypeAndClientID.data() + sizeof(int), sizeof(int));
-
-            registry->emplace_or_replace<Location>(clients[client_id], x, y, true);
-        }
-        else if (type == PacketType::LOGOUT)
-        {
-            INFO_FROM_CLIENT("Client disconnected", sender_ip, sender_port, type);
-
-            // On retire le client de la liste des clients connectés
-            if (clients.find(client_id) != clients.end())
+            case PacketType::LOGIN:
             {
-                registry->destroy(clients[client_id]);
-                clients.erase(client_id);
-                INFO("Removed client " + std::to_string(client_id) + " from the registry.");
+                INFO_FROM_CLIENT("New client connected", sender_ip, sender_port, type);
+
+                entt::entity new_entity = registry->create();
+                INFO("Added new client to the registry: " + std::to_string(static_cast<uint32_t>(new_entity)));
+                clients[idPlayerStatic++] = new_entity;
+
+                //ajout des location du joueur
+                int x, y;
+
+                // on recupère X (4 premiers octets)
+                std::memcpy(&x, dataWithoutPacketTypeAndClientID.data(), sizeof(int));
+
+                // on recupère Y (4 octets suivants)
+                std::memcpy(&y, dataWithoutPacketTypeAndClientID.data() + sizeof(int), sizeof(int));
+
+                //set connection info
+                registry->emplace<PlayerConnectionInfo>(new_entity, sender_ip, sender_port);
+
+                //set inital location
+                registry->emplace<Location>(new_entity, x, y, true);
+
+                //print la position du joueur
+                INFO("Initial position of the new player: (" + std::to_string(x) + ", " + std::to_string(y) + ")");
+
+                //envois de l'id au joueur
+                std::vector<char> packet_data;
+                uint32_t client_id = idPlayerStatic - 1; // L'id du client est l'id de l'entité dans le registre, qui correspond à idPlayerStatic - 1
+                packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&client_id), reinterpret_cast<char*>(&client_id) + sizeof(uint32_t));
+                send_packet(PacketType::LOGIN, client_id, sender_ip, sender_port, packet_data);
+
+                //Send all the other client positions to the new client
+                for (const auto& [other_client_key, other_entity] : clients)
+                {
+                    if (other_client_key == client_id) continue; // Skip the new client itself
+
+                    INFO("Sending position of client " + std::to_string(other_client_key) + " to the new client " + std::to_string(client_id));
+
+                    Location& loc = registry->get<Location>(other_entity);
+
+                    std::vector<char> packet_data;
+                    int x = loc.x;
+                    int y = loc.y;
+                    packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&x), reinterpret_cast<char*>(&x) + sizeof(int));
+                    packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&y), reinterpret_cast<char*>(&y) + sizeof(int));
+
+                    send_packet(PacketType::NEW_PLAYER, other_client_key, sender_ip, sender_port, packet_data);
+                }
+                break;
+            }
+            case PacketType::INPUT:
+            {
+                // On ne cherche pas X et Y ici, on attaque direct les inputs
+                auto* input = registry->try_get<Input>(clients[client_id]);
+
+                if (!input) {
+                    // Initialisation si c'est le premier paquet de ce client
+                    input = &registry->emplace<Input>(clients[client_id], std::vector<InputPacket>(), true);
+                }
+
+                std::vector<InputPacket> received_packets;
+                // On commence à l'offset 0 car il n'y a que de l'input dans dataWithoutPacketTypeAndClientID
+                for (size_t offset = 0; offset + 13 <= dataWithoutPacketTypeAndClientID.size(); offset += 13)
+                {
+                    InputPacket pkt;
+                    std::memcpy(&pkt.sequence_id, dataWithoutPacketTypeAndClientID.data() + offset, 4);
+                    pkt.keys = dataWithoutPacketTypeAndClientID[offset + 4];
+                    std::memcpy(&pkt.aim_x, dataWithoutPacketTypeAndClientID.data() + offset + 5, 4);
+                    std::memcpy(&pkt.aim_y, dataWithoutPacketTypeAndClientID.data() + offset + 9, 4);
+                    received_packets.push_back(pkt);
+                }
+
+                if (received_packets.empty()) break;
+
+                // --- LOGIQUE DE SEQUENCE ---
+                int decalage = -1;
+                bool found = false;
+
+                // On cherche l'index du paquet qui correspond au 'next_sequence_id' attendu
+                // Puisque c'est décroissant [102, 101, 100], le plus ancien est à la fin
+                for (int i = 0; i < (int)received_packets.size(); ++i) {
+                    if (received_packets[i].sequence_id == input->next_sequence_id) {
+                        decalage = i;
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (found) {
+                    // 1. On insère tout le bloc de nouveaux paquets [0 jusqu'à decalage]
+                    // au tout début du buffer pour garder l'ordre décroissant.
+                    input->input_buffer.insert(input->input_buffer.begin(),
+                                               received_packets.begin(),
+                                               received_packets.begin() + decalage + 1);
+
+                    // 2. Le plus récent est maintenant à l'index 0
+                    input->next_sequence_id = received_packets[0].sequence_id + 1;
+
+                    // 3. On garde les 20 plus récents (ceux au début du buffer)
+                    if (input->input_buffer.size() > 20) {
+                        // On coupe la queue (les plus anciens)
+                        input->input_buffer.erase(input->input_buffer.begin() + 20, input->input_buffer.end());
+                    }
+
+                    input->needToBroadcast = true;
+                }
+                else {
+                    // Si on ne trouve pas l'ID exact, on peut logguer pour voir s'il y a du "Packet Loss"
+                    // INFO("Séquence attendue " + std::to_string(input->next_sequence_id) + " non trouvée.");
+                }
+
+                break;
+            }
+            case PacketType::LOGOUT:
+            {
+                INFO_FROM_CLIENT("Client disconnected", sender_ip, sender_port, type);
+
+                // On retire le client de la liste des clients connectés
+                if (clients.find(client_id) != clients.end())
+                {
+                    registry->destroy(clients[client_id]);
+                    clients.erase(client_id);
+                    INFO("Removed client " + std::to_string(client_id) + " from the registry.");
+
+                    //send to other clients that this client has disconnected
+                    std::vector<char> packet_data;
+                    packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&client_id), reinterpret_cast<char*>(&client_id) + sizeof(uint32_t));
+                    for (const auto& [other_client_key, other_entity] : clients)
+                    {
+                        PlayerConnectionInfo& info = registry->get<PlayerConnectionInfo>(other_entity);
+                        std::string ip = info.ip;
+                        int port = info.port;
+
+                        send_packet(PacketType::LOGOUT, client_id, ip, port, packet_data);
+                    }
+                }
+
+                break;
+            }
+            default:
+            {
+                INFO_FROM_CLIENT("Received unhandled packet type", sender_ip, sender_port, type);
+                break;
             }
         }
-        else
-        {
-            INFO_FROM_CLIENT("Received unhandled packet type", sender_ip, sender_port, type);
-        }
-
     }
 }
 
@@ -370,15 +452,49 @@ void update()
 
             // Envoi du packet à tous les clients
             for (const auto& [other_client_key, other_entity] : clients) {
+                if (other_client_key == client_key) continue;
+
                 PlayerConnectionInfo& info = registry->get<PlayerConnectionInfo>(other_entity);
                 std::string ip = info.ip;
                 int port = info.port;
 
-                send_packet(PacketType::VECTOR, client_key, ip, port, packet_data);
+                send_packet(PacketType::NEW_PLAYER, client_key, ip, port, packet_data);
             }
 
             // On reset le flag de broadcast
             loc.needToBroadcast = false;
+        }
+
+        Input* input = registry->try_get<Input>(entity);
+
+        if (input && input->needToBroadcast)
+        {
+            // On construit le packet à envoyer
+            std::vector<char> packet_data;
+
+            // Ajout des inputs au packet
+            for (const auto& input_pkt : input->input_buffer)
+            {
+                packet_data.insert(packet_data.end(), reinterpret_cast<const char*>(&input_pkt.sequence_id), reinterpret_cast<const char*>(&input_pkt.sequence_id) + sizeof(uint32_t));
+                packet_data.push_back(input_pkt.keys);
+                packet_data.insert(packet_data.end(), reinterpret_cast<const char*>(&input_pkt.aim_x), reinterpret_cast<const char*>(&input_pkt.aim_x) + sizeof(float));
+                packet_data.insert(packet_data.end(), reinterpret_cast<const char*>(&input_pkt.aim_y), reinterpret_cast<const char*>(&input_pkt.aim_y) + sizeof(float));
+            }
+
+            // Envoi du packet à tous les clients
+            for (const auto& [other_client_key, other_entity] : clients) {
+                // On envoie le packet d'input de ce client à tous les autres clients, mais pas à lui même
+                if (other_client_key == client_key) continue;
+
+                PlayerConnectionInfo& info = registry->get<PlayerConnectionInfo>(other_entity);
+                std::string ip = info.ip;
+                int port = info.port;
+
+                send_packet(PacketType::INPUT, client_key, ip, port, packet_data);
+            }
+
+            // On reset le flag de broadcast
+            input->needToBroadcast = false;
         }
     }
 }

@@ -1,6 +1,7 @@
 add_library(GodoNet_client SHARED
         gn_network_manager.cpp
         register_types.cpp
+        ../commun/protocol.hpp
 )
 
 target_link_libraries(GodoNet_client PRIVATE

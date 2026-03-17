@@ -1,16 +1,13 @@
 [gd_scene format=4 uid="uid://bfj02d6t245ji"]
 
 [ext_resource type="TileSet" uid="uid://c2sc4831dsuw6" path="res://GodotNet/asset/sprite/TinySwords/Terrain/TileSet.tres" id="1_0wfyh"]
+[ext_resource type="PackedScene" uid="uid://buunuly30yk06" path="res://GodotNet/player.tscn" id="1_o5qli"]
 [ext_resource type="Script" uid="uid://cw5u8ymkj5jg1" path="res://GodotNet/script/gd_network_manager.gd" id="1_sugp2"]
-[ext_resource type="PackedScene" uid="uid://buunuly30yk06" path="res://GodotNet/player.tscn" id="2_jyhfs"]
-[ext_resource type="PackedScene" uid="uid://c5qljkkb5w6b6" path="res://GodotNet/PlayerController.tscn" id="3_jyhfs"]
 
 [node name="Main" type="Node" unique_id=462397334]
 
-[node name="GDNetworkManager" type="GDNetworkManager" parent="." unique_id=1274457594 node_paths=PackedStringArray("PlayerManager")]
+[node name="GDNetworkManager" type="GDNetworkManager" parent="." unique_id=1274457594]
 script = ExtResource("1_sugp2")
-PlayerManager = NodePath("../Game/Map/PlayerManager")
-PLAYER_SCENE = ExtResource("2_jyhfs")
 
 [node name="Game" type="Node2D" parent="." unique_id=1784466529]
 
@@ -38,7 +35,5 @@ tile_set = ExtResource("1_0wfyh")
 [node name="Misc" type="TileMapLayer" parent="Game/Map" unique_id=178488648]
 tile_set = ExtResource("1_0wfyh")
 
-[node name="PlayerManager" type="Node" parent="Game/Map" unique_id=1634572765]
-
-[node name="PlayerController" parent="Game/Map/PlayerManager" unique_id=1630829978 node_paths=PackedStringArray("NET_MANAGER") instance=ExtResource("3_jyhfs")]
-NET_MANAGER = NodePath("../../../../GDNetworkManager")
+[node name="Player" parent="Game/Map" unique_id=821549 instance=ExtResource("1_o5qli")]
+position = Vector2(-8, 21)

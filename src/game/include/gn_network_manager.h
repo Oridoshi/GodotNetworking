@@ -23,7 +23,8 @@
     #define SOCKET_ERROR -1
 #endif
 
-#include "protocol.hpp"
+#include "../commun/protocol.hpp"
+
 
 namespace godot {
     struct GDReplicatedNode {
@@ -45,6 +46,12 @@ namespace godot {
         std::vector<char> data;
     };
 
+    struct RemotePlayer
+    {
+        Node* node = nullptr; // Node représentant le joueur distant dans la scène
+        int next_sequence_id = 0;
+    };
+
     class GDNetworkManager : public Node {
         GDCLASS(GDNetworkManager, Node)
 
@@ -60,12 +67,18 @@ namespace godot {
 
         uint32_t idForServer = -1;
 
-        String server_ip = "192.168.2.75";
+        //String server_ip = "192.168.2.75";
+        String server_ip = "127.0.0.1";
 
         int const server_port = 25555;
 
-        // dictionaire pour lier joueur en loc avec server
-        std::unordered_map <uint32_t, Node*> client_id_to_node;
+        // Dictionnaire pour stocker les joueurs distants connectés, avec leur ID et le node associé
+        std::unordered_map <uint32_t, RemotePlayer> clientId_to_remotePlayer;
+
+        // buffer de 20 input du joueur
+        const int PACKET_SIZE = 13;
+        std::vector<InputPacket> input_buffer;
+        uint32_t next_sequence_id = 0;
 
     protected:
 
@@ -112,6 +125,8 @@ namespace godot {
 
         // Send a packet to a specific IP/Port
         void send_packet(int type, PackedByteArray data);
+
+        void send_input(bool up, bool down, bool left, bool right, float aim_x, float aim_y);
 
         // Check for incoming packets (Call this in _process)
         bool poll();

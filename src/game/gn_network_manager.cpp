@@ -2,7 +2,7 @@
 
 #include <string>
 #include <godot_cpp/core/class_db.hpp>
-#include "protocol.hpp"
+#include "../commun/protocol.hpp"
 
 using namespace godot;
 
@@ -21,7 +21,8 @@ struct WSASocketInitializer
         }
     }
 
-    ~WSASocketInitializer() {
+    ~WSASocketInitializer()
+    {
         WSACleanup();
     }
 };
@@ -41,10 +42,7 @@ void INFO_SERVER(String msg, String sender_ip, int sender_port, PacketType type)
     String type_str;
     switch (type) {
         case PacketType::LOGIN: type_str = "LOGIN"; break;
-        case PacketType::VECTOR: type_str = "VECTOR"; break;
-        case PacketType::ROTATOR: type_str = "ROTATOR"; break;
-        case PacketType::INT: type_str = "INT"; break;
-        case PacketType::STRING: type_str = "STRING"; break;
+        case PacketType::INPUT: type_str = "VECTOR"; break;
         case PacketType::LOGOUT: type_str = "LOGOUT"; break;
         default: type_str = "UNKNOWN"; break;
     }
@@ -127,16 +125,60 @@ void GDNetworkManager::send_packet(int type, PackedByteArray data) {
                               static_cast<int>(data_len), 0,
                               (sockaddr*)&dest_addr, sizeof(dest_addr));
 
-    if (sent_len == SOCKET_ERROR) {
+    if (sent_len == SOCKET_ERROR)
+    {
         #ifdef _WIN32
                 int err = WSAGetLastError();
         #else
                 int err = errno;
         #endif
         UtilityFunctions::printerr("Failed to send packet to ", server_ip, ":", server_port, " | Error code: ", err);
-    } else {
+    }
+    else
+    {
         UtilityFunctions::print("Packet sent (", sent_len, " bytes) to ", ip_utf8, ":", server_port);
     }
+}
+
+void GDNetworkManager::send_input(bool up, bool down, bool left, bool right, float aim_x, float aim_y)
+{
+    InputPacket input_pkt{};
+    input_pkt.sequence_id = next_sequence_id++;
+    input_pkt.keys = (up ? 1 : 0) | (down ? 2 : 0) | (left ? 4 : 0) | (right ? 8 : 0);
+    input_pkt.aim_x = aim_x;
+    input_pkt.aim_y = aim_y;
+
+    // on met le packet dans le buffer d'input
+    input_buffer.insert(input_buffer.begin(), input_pkt);
+
+    //on retire les anciens input du buffer (on garde que les 20 derniers)
+    if (input_buffer.size() > 20)
+    {
+        input_buffer.erase(input_buffer.begin() + 20, input_buffer.end());
+    }
+
+    PackedByteArray data;
+    data.resize(input_buffer.size() * PACKET_SIZE); // On réserve toute la place d'un coup
+
+    uint8_t* write_ptr = data.ptrw(); // Pointeur d'écriture directe
+
+    for (const InputPacket& pkt : input_buffer)
+    {
+        std::memcpy(write_ptr, &pkt.sequence_id, 4);
+        write_ptr += 4;
+
+        *write_ptr = pkt.keys;
+        write_ptr += 1;
+
+        std::memcpy(write_ptr, &pkt.aim_x, 4);
+        write_ptr += 4;
+
+        std::memcpy(write_ptr, &pkt.aim_y, 4);
+        write_ptr += 4;
+    }
+
+    INFO("Sending INPUT packet with sequence ID " + String::num_int64(input_pkt.sequence_id) + " | Keys: " + String::num_int64(input_pkt.keys) + " | Aim: (" + String::num_real(input_pkt.aim_x) + ", " + String::num_real(input_pkt.aim_y)+ ")");
+    send_packet(static_cast<int>(PacketType::INPUT), data);
 }
 
 void GDNetworkManager::_close_socket()
@@ -165,6 +207,7 @@ void GDNetworkManager::_set_non_blocking(socket_t sock) {
 void GDNetworkManager::_bind_methods() {
     // Enregistrement de send_packet
     ClassDB::bind_method(D_METHOD("send_packet", "data"), &GDNetworkManager::send_packet);
+    ClassDB::bind_method(D_METHOD("send_input", "up", "down", "left", "right", "aim_x", "aim_y"), &GDNetworkManager::send_input);
 }
 
 bool GDNetworkManager::poll()
@@ -194,7 +237,7 @@ bool GDNetworkManager::poll()
         int sender_port = ntohs(pkt.sender.sin_port);
 
         // ID
-        uint32_t client_id = 0;
+        uint32_t client_id = -1;
         std::memcpy(&client_id, pkt.data.data(), sizeof(uint32_t));
 
         //Packet Type
@@ -208,63 +251,148 @@ bool GDNetworkManager::poll()
 
         std::vector<char> dataWithoutPacketTypeAndClientID(pkt.data.begin() + sizeof(uint32_t) + 1, pkt.data.end());
 
-        if (type == PacketType::LOGIN)
+
+        switch (type)
         {
-            idForServer = client_id;
-
-            INFO_SERVER("Server send ID info, my id is " + String::num_int64(client_id), sender_ip.c_str(), sender_port, type);
-        }
-        else if (type == PacketType::VECTOR)
-        {
-            //mise à jour location du joueur
-            int x, y;
-
-            // on recupère X (4 premiers octets)
-            std::memcpy(&x, dataWithoutPacketTypeAndClientID.data(), sizeof(int));
-
-            // on recupère Y (4 octets suivants)
-            std::memcpy(&y, dataWithoutPacketTypeAndClientID.data() + sizeof(int), sizeof(int));
-
-            if (client_id != idForServer)
+            case PacketType::LOGIN:
             {
-                INFO_SERVER("Received position update from another client " + String::num_int64(client_id) + " | New position: (" + String::num(x) + ", " + String::num(y) + ")", sender_ip.c_str(), sender_port, type);
+                idForServer = client_id;
 
-                if (client_id_to_node.find(client_id) != client_id_to_node.end())
+                INFO_SERVER("Server send ID info, my id is " + String::num_int64(client_id), sender_ip.c_str(), sender_port, type);
+                break;
+            }
+            case PacketType::INPUT:
+            {
+                // 1. Sécurité : Vérifier si le client est connu
+                if (clientId_to_remotePlayer.find(client_id) == clientId_to_remotePlayer.end()) {
+                    INFO_SERVER("Received INPUT packet from unknown client ID " + String::num_int64(client_id) + ". Ignoring.", sender_ip.c_str(), sender_port, type);
+                    break;
+                }
+
+                // 2. Récupération des inputs
+                std::vector<InputPacket> receive_input_buffer;
+                for (size_t offset = 0; offset + PACKET_SIZE <= dataWithoutPacketTypeAndClientID.size(); offset += PACKET_SIZE) {
+                    InputPacket pkt;
+                    std::memcpy(&pkt.sequence_id, dataWithoutPacketTypeAndClientID.data() + offset, 4);
+                    pkt.keys = dataWithoutPacketTypeAndClientID[offset + 4];
+                    std::memcpy(&pkt.aim_x, dataWithoutPacketTypeAndClientID.data() + offset + 5, 4);
+                    std::memcpy(&pkt.aim_y, dataWithoutPacketTypeAndClientID.data() + offset + 9, 4);
+                    receive_input_buffer.push_back(pkt);
+                }
+
+                if (receive_input_buffer.empty()) break; // Sécurité anti-crash
+
+                Node* node = clientId_to_remotePlayer[client_id].node;
+                if (node) {
+                    int decalage = -1;
+                    bool find_next = false;
+
+                    // 3. Recherche de la séquence attendue
+                    do {
+                        decalage++;
+                        InputPacket check_pkt = receive_input_buffer[decalage];
+                        find_next = (check_pkt.sequence_id == clientId_to_remotePlayer[client_id].next_sequence_id);
+
+                        INFO("Checking packet with sequence ID " + String::num_int64(check_pkt.sequence_id) + " against expected ID " + String::num_int64(clientId_to_remotePlayer[client_id].next_sequence_id) + " | Found: " + (find_next ? "YES" : "NO"));
+
+                        if (decalage >= (int)receive_input_buffer.size() - 1 && !find_next) {
+                            INFO("Expected sequence ID " + String::num_int64(clientId_to_remotePlayer[client_id].next_sequence_id) + " not found. Latest received ID is " + String::num_int64(check_pkt.sequence_id) + ". Assuming packet loss and skipping to the latest.");
+                            // Trop de paquets perdus : on saute directement au plus récent
+                            clientId_to_remotePlayer[client_id].next_sequence_id = check_pkt.sequence_id;
+                            find_next = true;
+                        }
+                    } while (!find_next);
+
+                    // 4. Traitement chronologique (du plus vieux au plus récent)
+                    for (int i = decalage; i >= 0; i--) {
+                        // ON UTILISE L'INDEX i ICI !
+                        InputPacket& current_pkt = receive_input_buffer[i];
+                        INFO("Processing packet with sequence ID " + String::num_int64(current_pkt.sequence_id) + " | Keys: " + String::num_int64(current_pkt.keys) + " | Aim: (" + String::num_real(current_pkt.aim_x) + ", " + String::num_real(current_pkt.aim_y)+ ")");
+
+                        bool up    = (current_pkt.keys & 1) != 0;
+                        bool down  = (current_pkt.keys & 2) != 0;
+                        bool left  = (current_pkt.keys & 4) != 0;
+                        bool right = (current_pkt.keys & 8) != 0;
+
+                        // Mise à jour de la séquence
+                        clientId_to_remotePlayer[client_id].next_sequence_id++;
+
+                        // Calcul de la direction pour CE paquet spécifique
+                        Vector2 direction = Vector2((right ? 1 : 0) - (left ? 1 : 0),
+                                                    (down ? 1 : 0) - (up ? 1 : 0)).normalized();
+
+                        // On applique le mouvement au node Godot
+                        node->call("MoveHandle", direction);
+
+                        // Si tu as besoin de la souris, passe-la aussi :
+                        // node->call("AimHandle", Vector2(current_pkt.aim_x, current_pkt.aim_y));
+                    }
+                }
+                break;
+            }
+            case PacketType::NEW_PLAYER:
+            {
+                if (clientId_to_remotePlayer.find(client_id) != clientId_to_remotePlayer.end())
                 {
-                    Node* node = client_id_to_node[client_id];
+                    INFO_SERVER("Received NEW_PLAYER packet for an already registered client ID " + String::num_int64(client_id) + ". Ignoring.", sender_ip.c_str(), sender_port, type);
+                    break;
+                }
+
+                INFO("Received a new client ID (" + String::num_int64(client_id) + ") with SEVER IP " + sender_ip.c_str() + " and port " + String::num_int64(sender_port));
+
+                //mise à jour location du joueur
+                int x, y;
+
+                // on recupère X (4 premiers octets)
+                std::memcpy(&x, dataWithoutPacketTypeAndClientID.data(), sizeof(int));
+
+                // on recupère Y (4 octets suivants)
+                std::memcpy(&y, dataWithoutPacketTypeAndClientID.data() + sizeof(int), sizeof(int));
+
+                // Création d'un nouveau node pour ce client
+                Variant result = call("register_node");
+                Node* newNode = Object::cast_to<Node>(result);
+                clientId_to_remotePlayer[client_id] = RemotePlayer{newNode, 0}; // On stocke le node associé à ce client
+                // On suppose que les nodes ont une méthode set_position(Vector2) pour mettre à jour leur position
+                Variant pos = Vector2(x, y);
+                newNode->call("set_position", pos);
+
+                break;
+            }
+            case PacketType::LOGOUT:
+            {
+                INFO_SERVER("Deconnection du joueur " + String::num_int64(client_id), sender_ip.c_str(), sender_port, type);
+                // On retire le client de la liste des clients connectés
+                if (clientId_to_remotePlayer.find(client_id) != clientId_to_remotePlayer.end())
+                {
+                    Node* node = clientId_to_remotePlayer[client_id].node;
                     if (node)
                     {
-                        // On suppose que les nodes ont une méthode set_position(Vector2) pour mettre à jour leur position
-                        Variant pos = Vector2(x, y);
-                        node->call("set_position", pos);
+                        node->queue_free(); // On supprime le node associé à ce client
                     }
                     else
                     {
                         UtilityFunctions::printerr("Node for client ID ", String::num_int64(client_id), " is null.");
                     }
+                    clientId_to_remotePlayer.erase(client_id); // On retire l'entrée du dictionnaire
                 }
-                else
-                {
-                    INFO("Received position update for unknown client ID creating a new node for it.");
-                    // Création d'un nouveau node pour ce client
-                    Variant result = call("register_node");
-                    Node* newNode = Object::cast_to<Node>(result);
-                    client_id_to_node[client_id] = newNode;
-                    // On suppose que les nodes ont une méthode set_position(Vector2) pour mettre à jour leur position
-                    Variant pos = Vector2(x, y);
-                    newNode->call("set_position", pos);
-                }
+                break;
             }
-            else
+            default:
             {
-                INFO_SERVER("Received position update from Server on the client " + String::num_int64(client_id) + " | New position: (" + String::num(x) + ", " + String::num(y) + ")", sender_ip.c_str(), sender_port, type);
+                INFO_SERVER("Received unhandled packet type", server_ip, server_port, type);
+                break;
             }
         }
-    } else if (recv_len == 0) {
+    }
+    else if (recv_len == 0)
+    {
         // Connection closed by the peer
         UtilityFunctions::print("Connection closed by peer");
         return false;
-    } else {
+    }
+    else
+    {
         // Check for non-blocking error
         #ifdef _WIN32
             int err = WSAGetLastError();

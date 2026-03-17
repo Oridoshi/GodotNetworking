@@ -24,18 +24,13 @@
     #define SOCKET_ERROR -1
 #endif
 
-#include "protocol.hpp"
+#include "../../commun/protocol.hpp"
 #include <entt/entt.hpp>
 #include <chrono>
 #include <thread>
 #include <string>
 #include "mutex"
 #include "queue"
-
-struct Packet {
-    sockaddr_in sender;
-    std::vector<char> data;
-};
 
 struct NetworkContext {
     int const port;
@@ -57,9 +52,22 @@ struct PlayerConnectionInfo {
     int port;
 };
 
+//INITAL LOC
 struct Location {
     int x{}, y{};
     bool needToBroadcast = false;
+};
+
+struct Input {
+    // Ajoutez ici les données spécifiques au joueur (ex: santé, score, etc.)
+    int next_sequence_id = 0;
+    const int PACKET_SIZE = 13;
+
+    std::vector<InputPacket> input_buffer;
+    bool needToBroadcast = false;
+
+    Input(std::vector<InputPacket> buffer, bool broadcast)
+        : input_buffer(std::move(buffer)), needToBroadcast(broadcast) {}
 };
 
 inline socket_t udp_socket = INVALID_SOCKET;
