@@ -8,7 +8,11 @@
 #include <cstdint>
 #include <vector>
 
-struct Packet {
+#pragma pack(push, 1)
+
+// Type de Packet
+struct Packet
+{
     sockaddr_in sender;
     std::vector<char> data;
 };
@@ -26,11 +30,28 @@ struct LocationPacket
     int y;
 };
 
-enum class PacketType : uint8_t {
+struct PingRequestPacket
+{
+    uint32_t id;
+    uint64_t timestamp0;
+};
+
+struct PingResponsePacket
+{
+    uint32_t id;
+    uint64_t timestamp0;
+    uint64_t timestamp1;
+};
+
+#pragma pack(pop)
+
+enum class PacketType : uint8_t
+{
     LOGIN      = 0,
     INPUT      = 1,
-    NEW_PLAYER = 2,
-    LOGOUT     = 3
+    LOCATION   = 2,
+    PING       = 3,
+    LOGOUT     = 4
 };
 
 #endif //GODOTNETWORKING_PROTOCOL_H

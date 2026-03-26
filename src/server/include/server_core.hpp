@@ -41,34 +41,47 @@ struct NetworkContext {
     std::queue<Packet> incoming_packets;
 };
 
-/*************** STRUC POUR ENTT *****************/
+//*************** STRUC POUR ENTT *****************//
 
 /**
  * @brief Représente un joueur connecté au serveur, avec sa position et un flag indiquant s'il faut diffuser sa position aux autres clients.
  */
-
 struct PlayerConnectionInfo {
     std::string ip;
     int port;
 };
 
-//INITAL LOC
+/**
+ * @brief Représente la position d'un joueur dans le monde du jeu, avec un flag indiquant s'il faut diffuser cette position aux autres clients.
+ */
 struct Location {
     int x{}, y{};
     bool needToBroadcast = false;
 };
 
+/**
+ * @brief Représente les données d'input d'un joueur, avec un buffer pour stocker les paquets d'input reçus et des identifiants de séquence pour le suivi des paquets.
+ */
 struct Input {
     // Ajoutez ici les données spécifiques au joueur (ex: santé, score, etc.)
     int next_sequence_id = 0;
+    int sequence_id_treat = 0; // Le dernier sequence_id traité pour éviter de traiter plusieurs fois le même paquet
     const int PACKET_SIZE = 13;
 
     std::vector<InputPacket> input_buffer;
-    bool needToBroadcast = false;
 
-    Input(std::vector<InputPacket> buffer, bool broadcast)
-        : input_buffer(std::move(buffer)), needToBroadcast(broadcast) {}
+    Input(std::vector<InputPacket> buffer)
+        : input_buffer(std::move(buffer)) {}
 };
+
+//********************************************//
+
+//---- MOVE VALUE ---- //
+
+int const SPEED = 300; // Vitesse de déplacement du joueur (en unités par seconde)
+int const TICK_RATE = 60; // Nombre de ticks par seconde pour la logique du serveur
+
+//---------------------//
 
 inline socket_t udp_socket = INVALID_SOCKET;
 inline NetworkContext* nctx;

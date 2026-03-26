@@ -49,7 +49,6 @@ namespace godot {
     struct RemotePlayer
     {
         Node* node = nullptr; // Node représentant le joueur distant dans la scène
-        int next_sequence_id = 0;
     };
 
     class GDNetworkManager : public Node {
@@ -80,6 +79,11 @@ namespace godot {
         std::vector<InputPacket> input_buffer;
         uint32_t next_sequence_id = 0;
 
+        // Timer pour le ping
+        bool keep_pinging = true;
+        int next_ping_id = 0;
+        int ping_interval = 5; // Intervalle de ping en secondes
+
     protected:
 
     public:
@@ -101,6 +105,10 @@ namespace godot {
         void _close_socket();
 
         void _logout();
+
+        void ping_server();
+
+        void send_ping();
 
     protected:
         static void _bind_methods();

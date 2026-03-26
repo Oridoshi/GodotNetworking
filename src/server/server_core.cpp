@@ -27,6 +27,8 @@ void INFO_FROM_CLIENT(std::string msg, std::string sender_ip, int sender_port, P
     switch (type) {
         case PacketType::LOGIN: type_str = "LOGIN"; break;
         case PacketType::INPUT: type_str = "INPUT"; break;
+        case PacketType::LOCATION: type_str = "LOCATION"; break;
+        case PacketType::PING: type_str = "PING"; break;
         case PacketType::LOGOUT: type_str = "LOGOUT"; break;
         default: type_str = "UNKNOWN"; break;
     }
@@ -165,22 +167,7 @@ void send_packet(PacketType type, uint32_t id, std::string ip, int port, std::ve
 #endif
         ERR("Failed to send packet to " + ip + ":" + std::to_string(port) + " | Error code: " + std::to_string(err));
     } else {
-        INFO("Packet sent (" + std::to_string(sent_len) + " bytes) to " + ip + ":" + std::to_string(port));
-
-        /* Affichage des info envoyer
-        std::string type_str;
-        switch (type) {
-            case PacketType::LOGIN: type_str = "LOGIN"; break;
-            case PacketType::VECTOR: type_str = "VECTOR"; break;
-            case PacketType::ROTATOR: type_str = "ROTATOR"; break;
-            case PacketType::INT: type_str = "INT"; break;
-            case PacketType::STRING: type_str = "STRING"; break;
-            case PacketType::LOGOUT: type_str = "LOGOUT"; break;
-            default: type_str = "UNKNOWN"; break;
-        }
-
-        INFO("Packet details | Type: " + type_str + " | ID: " + std::to_string(id) + " | Data size: " + std::to_string(data.size() - sizeof(uint32_t) - 1) + " bytes to " + ip + ":" + std::to_string(port));
-        */
+        INFO("Packet sent to " + ip + ":" + std::to_string(port) + " | Type: " + std::to_string(static_cast<int>(type)) + " | ID: " + std::to_string(id) + " | Data size: " + std::to_string(data.size()) + " bytes");
     }
 }
 
@@ -239,6 +226,48 @@ void network_worker(NetworkContext* ctx) {
     }
 }
 
+void player_location_interpolation(InputPacket pkt, entt::entity entity)
+{
+    // Ici on applique l'input pour mettre à jour la position du joueur
+    // Par exemple, si un joueur appuie sur "up", on peut faire y -= 1
+    // C'est aussi ici qu'on peut gérer la physique, les collisions, etc.
+
+    // On suppose que chaque bit de 'keys' correspond à une direction (ex: 1 = up, 2 = down, 4 = left, 8 = right)
+    // et que SPEED est la vitesse de déplacement du joueur en unités par seconde.
+    Location& loc = registry->get<Location>(entity);
+
+    if (pkt.keys & 1) loc.y -= SPEED / TICK_RATE; // Up
+    if (pkt.keys & 2) loc.y += SPEED / TICK_RATE; // Down
+    if (pkt.keys & 4) loc.x -= SPEED / TICK_RATE; // Left
+    if (pkt.keys & 8) loc.x += SPEED / TICK_RATE; // Right
+
+    // On met à jour le flag pour indiquer que la position doit être diffusée aux autres clients
+    loc.needToBroadcast = true;
+
+    // Log de la nouvelle position du joueur
+    INFO("Updated position of player " + std::to_string(static_cast<uint32_t>(entity)) + ": (" + std::to_string(loc.x) + ", " + std::to_string(loc.y) + ")");
+}
+
+void interpretation_of_inputs (int client_id)
+{
+    auto* input = registry->try_get<Input>(clients[client_id]);
+
+    if (!input) {
+        ERR("No input component found for client " + std::to_string(client_id));
+        return;
+    }
+
+    // On traite les paquets d'input dans l'ordre de séquence
+    for (const InputPacket& pkt : input->input_buffer)
+    {
+        if (pkt.sequence_id < input->sequence_id_treat) {
+            continue; // Ce paquet a déjà été traité, on le skip
+        }
+
+        player_location_interpolation(pkt, clients[client_id]);
+        input->sequence_id_treat = pkt.sequence_id + 1; // On met à jour le dernier sequence_id traité
+    }
+}
 void read_incoming_packet()
 {
     //INFO("Reading incoming packets...");
@@ -330,7 +359,7 @@ void read_incoming_packet()
                     packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&x), reinterpret_cast<char*>(&x) + sizeof(int));
                     packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&y), reinterpret_cast<char*>(&y) + sizeof(int));
 
-                    send_packet(PacketType::NEW_PLAYER, other_client_key, sender_ip, sender_port, packet_data);
+                    send_packet(PacketType::LOCATION, other_client_key, sender_ip, sender_port, packet_data);
                 }
                 break;
             }
@@ -341,7 +370,7 @@ void read_incoming_packet()
 
                 if (!input) {
                     // Initialisation si c'est le premier paquet de ce client
-                    input = &registry->emplace<Input>(clients[client_id], std::vector<InputPacket>(), true);
+                    input = &registry->emplace<Input>(clients[client_id], std::vector<InputPacket>());
                 }
 
                 std::vector<InputPacket> received_packets;
@@ -388,12 +417,48 @@ void read_incoming_packet()
                         input->input_buffer.erase(input->input_buffer.begin() + 20, input->input_buffer.end());
                     }
 
-                    input->needToBroadcast = true;
+                    INFO("Processed " + std::to_string(decalage + 1) + " new input packets for client " + std::to_string(client_id) + ". Next expected sequence ID is now " + std::to_string(input->next_sequence_id) + ", now proceeding to interpret the inputs.");
+
+                    interpretation_of_inputs(client_id);
                 }
                 else {
                     // Si on ne trouve pas l'ID exact, on peut logguer pour voir s'il y a du "Packet Loss"
-                    // INFO("Séquence attendue " + std::to_string(input->next_sequence_id) + " non trouvée.");
+                    INFO("Séquence attendue " + std::to_string(input->next_sequence_id) + " non trouvée.");
                 }
+
+                break;
+            }
+            case PacketType::PING:
+            {
+                // On peut répondre au ping pour que le client puisse calculer son ping sous la forme d'un PingResponsePacket
+                std::vector<char> packet_data;
+                uint32_t ping_id;
+                uint64_t timestamp0;
+                //recup des données du ping du joueur (id et timestamp0)
+                if (dataWithoutPacketTypeAndClientID.size() >= sizeof(uint32_t) + sizeof(uint64_t)) {
+                    std::memcpy(&ping_id, dataWithoutPacketTypeAndClientID.data(), sizeof(uint32_t));
+                    std::memcpy(&timestamp0, dataWithoutPacketTypeAndClientID.data() + sizeof(uint32_t), sizeof(uint64_t));
+                }
+                else
+                {
+                    WARN("Received PING packet with insufficient data from " + sender_ip + ":" + std::to_string(sender_port));
+                    break;
+                }
+
+                //ajout du timestamp1 (timestamp de réponse) pour que le client puisse calculer le RTT
+                uint64_t timestamp1 = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                            std::chrono::system_clock::now().time_since_epoch())
+                                            .count();
+
+                INFO_FROM_CLIENT("Received PING | Ping ID: " + std::to_string(ping_id) + " | Timestamp0: " + std::to_string(timestamp0) + " | Timestamp1: " + std::to_string(timestamp1) + " | TT: " + std::to_string(timestamp1 - timestamp0) + " ms", sender_ip, sender_port, type);
+
+                // Construction du packet de réponse au ping
+                packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&ping_id), reinterpret_cast<char*>(&ping_id) + sizeof(uint32_t));
+                packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&timestamp0), reinterpret_cast<char*>(&timestamp0) + sizeof(uint64_t));
+                packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&timestamp1), reinterpret_cast<char*>(&timestamp1) + sizeof(uint64_t));
+
+                // Envoi du packet de réponse au ping
+                send_packet(PacketType::PING, client_id, sender_ip, sender_port, packet_data);
 
                 break;
             }
@@ -452,49 +517,17 @@ void update()
 
             // Envoi du packet à tous les clients
             for (const auto& [other_client_key, other_entity] : clients) {
-                if (other_client_key == client_key) continue;
+                //if (other_client_key == client_key) continue;
 
                 PlayerConnectionInfo& info = registry->get<PlayerConnectionInfo>(other_entity);
                 std::string ip = info.ip;
                 int port = info.port;
 
-                send_packet(PacketType::NEW_PLAYER, client_key, ip, port, packet_data);
+                send_packet(PacketType::LOCATION, client_key, ip, port, packet_data);
             }
 
             // On reset le flag de broadcast
             loc.needToBroadcast = false;
-        }
-
-        Input* input = registry->try_get<Input>(entity);
-
-        if (input && input->needToBroadcast)
-        {
-            // On construit le packet à envoyer
-            std::vector<char> packet_data;
-
-            // Ajout des inputs au packet
-            for (const auto& input_pkt : input->input_buffer)
-            {
-                packet_data.insert(packet_data.end(), reinterpret_cast<const char*>(&input_pkt.sequence_id), reinterpret_cast<const char*>(&input_pkt.sequence_id) + sizeof(uint32_t));
-                packet_data.push_back(input_pkt.keys);
-                packet_data.insert(packet_data.end(), reinterpret_cast<const char*>(&input_pkt.aim_x), reinterpret_cast<const char*>(&input_pkt.aim_x) + sizeof(float));
-                packet_data.insert(packet_data.end(), reinterpret_cast<const char*>(&input_pkt.aim_y), reinterpret_cast<const char*>(&input_pkt.aim_y) + sizeof(float));
-            }
-
-            // Envoi du packet à tous les clients
-            for (const auto& [other_client_key, other_entity] : clients) {
-                // On envoie le packet d'input de ce client à tous les autres clients, mais pas à lui même
-                if (other_client_key == client_key) continue;
-
-                PlayerConnectionInfo& info = registry->get<PlayerConnectionInfo>(other_entity);
-                std::string ip = info.ip;
-                int port = info.port;
-
-                send_packet(PacketType::INPUT, client_key, ip, port, packet_data);
-            }
-
-            // On reset le flag de broadcast
-            input->needToBroadcast = false;
         }
     }
 }
