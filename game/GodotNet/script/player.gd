@@ -3,10 +3,16 @@ extends CharacterBody2D
 
 const SPEED = 300
 @onready var Sprite = $AnimatedSprite2D
+@onready var camera_2d: Camera2D = $Camera2D
+var bIsLocalPlayer = false
 
-#func _ready() -> void:
+func _ready() -> void:
+	if not bIsLocalPlayer:
+		camera_2d.enabled = false
 
 #func _physics_process(delta: float) -> void:
+	#if(bIsLocalPlayer):
+		#print("Local Player = X : " + str(position.x) + " Y : " + str(position.y))
 
 func MoveHandle (direction: Vector2) -> void:
 	RotationHandle(direction)
@@ -39,3 +45,6 @@ func AnimationHandle (direction: Vector2) -> void:
 		Sprite.play("Idle")
 	else :
 		Sprite.play("Walk")
+
+func SetAsLocalPlayer () -> void:
+	bIsLocalPlayer = true

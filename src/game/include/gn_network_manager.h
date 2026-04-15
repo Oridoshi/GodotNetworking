@@ -79,7 +79,7 @@ namespace godot {
         std::vector<InputPacket> input_buffer;
         uint32_t next_sequence_id = 0;
 
-        // Timer pour le ping
+        // Var pour le ping
         bool keep_pinging = true;
         int next_ping_id = 0;
         int ping_interval = 5; // Intervalle de ping en secondes

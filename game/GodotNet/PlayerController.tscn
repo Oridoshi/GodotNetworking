@@ -5,7 +5,4 @@
 
 [node name="PlayerController" type="Node2D" unique_id=1541866206]
 script = ExtResource("1_rgh11")
-
-[node name="Player" parent="." unique_id=821549 instance=ExtResource("2_01x4n")]
-
-[node name="Camera2D" type="Camera2D" parent="Player" unique_id=510598500]
+PLAYER_SCENE = ExtResource("2_01x4n")

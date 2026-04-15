@@ -267,38 +267,39 @@ bool GDNetworkManager::poll()
             }
             case PacketType::LOCATION:
             {
-                if (client_id == idForServer)
-                {
-                    INFO_SERVER("Received LOCATION packet for my own client ID " + String::num_int64(client_id) + ". Ignoring.", sender_ip.c_str(), sender_port, type);
-                    break;
+                if (client_id == idForServer) {
+                    break; // On ignore notre propre position
                 }
 
-                if (clientId_to_remotePlayer.find(client_id) == clientId_to_remotePlayer.end())
-                {
-                    INFO("Received a new client ID (" + String::num_int64(client_id) + ") with SEVER IP " + sender_ip.c_str() + " and port " + String::num_int64(sender_port));
-                    Variant result = call("register_node");
-                    Node* newNode = Object::cast_to<Node>(result);
-                    clientId_to_remotePlayer[client_id] = RemotePlayer{newNode}; // On stocke le node associé à ce client
-                }
-
-                //mise à jour location du joueur
+                // 1. ON LIT X ET Y EN PREMIER !
                 int x, y;
-
-                // on recupère X (4 premiers octets)
                 std::memcpy(&x, dataWithoutPacketTypeAndClientID.data(), sizeof(int));
-
-                // on recupère Y (4 octets suivants)
                 std::memcpy(&y, dataWithoutPacketTypeAndClientID.data() + sizeof(int), sizeof(int));
 
-                // Création d'un nouveau node pour ce client
+                // 2. Si le joueur n'existe pas, on le crée en lui donnant X et Y directement
+                if (clientId_to_remotePlayer.find(client_id) == clientId_to_remotePlayer.end())
+                {
+                    INFO("Received a new client ID (" + String::num_int64(client_id) + ")" + " with initial position (" + String::num_int64(x) + ", " + String::num_int64(y) + ")");
 
-                // On suppose que les nodes ont une méthode set_position(Vector2) pour mettre à jour leur position
-                Variant pos = Vector2(x, y);
+                    // On passe x et y à la fonction GDScript !
+                    Variant result = call("register_node", x, y);
 
-                Node* RemotePlayerNode = clientId_to_remotePlayer[client_id].node;
-                RemotePlayerNode->call("set_position", pos);
+                    Node* newNode = Object::cast_to<Node>(result);
+                    clientId_to_remotePlayer[client_id] = RemotePlayer{newNode};
+                }
+                else
+                {
+                    INFO("Received position update for existing client ID (" + String::num_int64(client_id) + ")" + " with new position (" + String::num_int64(x) + ", " + String::num_int64(y) + ")");
 
-                break;
+                    // 3. Mise à jour de la position pour les frames suivantes
+                    Variant pos = Vector2(x, y);
+                    Node* RemotePlayerNode = clientId_to_remotePlayer[client_id].node;
+
+                    // call_deferred est plus sûr pour la physique que call tout court
+                    RemotePlayerNode->call_deferred("set_position", pos);
+
+                    break;
+                }
             }
             case PacketType::PING:
             {
