@@ -56,7 +56,6 @@ struct PlayerConnectionInfo {
  */
 struct Location {
     int x{}, y{};
-    bool needToBroadcast = false;
 };
 
 /**
@@ -83,6 +82,13 @@ int const TICK_RATE = 60; // Nombre de ticks par seconde pour la logique du serv
 
 //---------------------//
 
+
+//---- WORLD STATE ----//
+
+inline uint32_t frame_id = 0;
+
+//---------------------//
+
 inline socket_t udp_socket = INVALID_SOCKET;
 inline NetworkContext* nctx;
 inline entt::registry* registry;
@@ -97,4 +103,4 @@ void INFO_FROM_CLIENT(std::string msg, std::string sender_ip, int sender_port, P
 // Dictionaire pour stocker les clients connectés, id de l'entité et comme valeur l'entité correspondante dans le registre
 inline std::unordered_map<uint32_t, entt::entity> clients;
 
-inline int idPlayerStatic = 100; // ID statique pour les joueurs, à incrémenter à chaque nouveau joueur
+inline int net_id = 100; // ID statique pour les joueurs, à incrémenter à chaque nouveau joueur

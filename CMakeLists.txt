@@ -124,3 +124,18 @@ add_custom_target(server2Client1Editor
         VERBATIM
         USES_TERMINAL
 )
+
+# 8. SERVER 1 CLIENT : Lance le serveur et 1 clients
+add_custom_target(server1Client
+        # Serveur
+        COMMAND cmd /c start "SERVER CORE" cmd /k "$<TARGET_FILE:GodoNet_server>"
+        # Client en mode jeu
+        COMMAND cmd /c start "CLIENT GAME" cmd /k "${GODOT_EXECUTABLE}" --path "${GODOT_PROJECT_DIR}"
+
+        DEPENDS setup GodoNet_server GodoNet_client
+        WORKING_DIRECTORY "${GODOT_PROJECT_DIR}"
+        COMMENT "Lancement de l'environnement Server + Client..."
+        # VERBATIM est la clé ici pour que Windows reçoive bien les guillemets
+        VERBATIM
+        USES_TERMINAL
+)

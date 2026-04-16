@@ -26,6 +26,7 @@ struct InputPacket {
 
 struct LocationPacket
 {
+    uint32_t player_net_id;
     int x;
     int y;
 };
@@ -43,15 +44,39 @@ struct PingResponsePacket
     uint64_t timestamp1;
 };
 
+struct LoginPacket
+{
+    uint32_t frame_id;
+};
+
+struct WorldStatePacket
+{
+    uint32_t frame_id; // = "id"
+    std::vector<char> data;
+};
+
 #pragma pack(pop)
+
+//---- COULEUR LOG ----//
+
+const std::string RESET   = "\033[0m";
+const std::string RED     = "\033[31m";
+const std::string GREEN   = "\033[32m";
+const std::string YELLOW  = "\033[33m";
+const std::string BLUE    = "\033[34m";
+const std::string CYAN    = "\033[36m";
+
+//---------------------//
 
 enum class PacketType : uint8_t
 {
     LOGIN      = 0,
-    INPUT      = 1,
-    LOCATION   = 2,
-    PING       = 3,
-    LOGOUT     = 4
+    WORLDSTATE = 1,
+    INPUT      = 2,
+    LOCATION   = 3,
+    PING       = 4,
+    LOGOUT     = 5
 };
 
 #endif //GODOTNETWORKING_PROTOCOL_H
+

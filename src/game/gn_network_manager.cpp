@@ -5,7 +5,8 @@
 #include <godot_cpp/classes/worker_thread_pool.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include "../commun/protocol.hpp"
-
+#include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
 using namespace godot;
 
 /**
@@ -34,24 +35,42 @@ struct WSASocketInitializer
 static WSASocketInitializer g_wsa_init;
 #endif
 
-void INFO(String msg)
+void INFO(const String& msg)
 {
-    UtilityFunctions::print("[INFO] ", msg);
+    // Affiche [INFO] en bleu cyan
+    UtilityFunctions::print_rich("[color=blue][INFO][/color] ", msg);
+}
+
+void OK(const String& msg)
+{
+    // Affiche [OK] en vert et en gras ([b])
+    UtilityFunctions::print_rich("[color=green][b][OK][/b][/color] ", msg);
+}
+
+void WARN(const String& msg)
+{
+    // Affiche [WARNING] en jaune
+    UtilityFunctions::print_rich("[color=yellow][WARNING][/color] ", msg);
+}
+
+void ERR(const String& msg)
+{
+    UtilityFunctions::print_rich("[color=red][b][ERROR][/b][/color] ", msg);
 }
 
 void INFO_SERVER(String msg, String sender_ip, int sender_port, PacketType type)
 {
     String type_str;
     switch (type) {
-        case PacketType::LOGIN:    type_str = "LOGIN"; break;
-        case PacketType::LOCATION: type_str = "LOCATION"; break;
-        case PacketType::INPUT:    type_str = "INPUT"; break;
-        case PacketType::PING:     type_str = "PING"; break;
-        case PacketType::LOGOUT:   type_str = "LOGOUT"; break;
-        default:                   type_str = "UNKNOWN"; break;
+        case PacketType::LOGIN:      type_str = "[color=cyan]LOGIN[/color]"; break;
+        case PacketType::WORLDSTATE: type_str = "[color=blue]WORLDSTATE[/color]"; break;
+        case PacketType::INPUT:      type_str = "[color=purple]INPUT[/color]"; break;
+        case PacketType::PING:       type_str = "[color=pink]PING[/color]"; break;
+        case PacketType::LOGOUT:     type_str = "[color=red]LOGOUT[/color]"; break;
+        default:                     type_str = "[color=orange]UNKNOWN[/color]"; break;
     }
 
-    UtilityFunctions::print("[INFO SERVER] ", msg, " | From: ", sender_ip, ":", sender_port, " | Type: ", type_str);
+    UtilityFunctions::print_rich("[color=cyan][INFO SERVER][/color] ", msg, " | From: ", sender_ip, ":", sender_port, " | Type: ", type_str);
 }
 
 bool GDNetworkManager::bind_port()
@@ -214,6 +233,165 @@ void GDNetworkManager::_bind_methods() {
     ClassDB::bind_method(D_METHOD("send_input", "up", "down", "left", "right", "aim_x", "aim_y"), &GDNetworkManager::send_input);
 }
 
+void GDNetworkManager::update_player_location(uint32_t client_id, int x, int y)
+{
+    INFO("Update Loc");
+    if (client_id == idForServer) {
+        return; // On ignore notre propre position
+    }
+
+    // 2. Si le joueur n'existe pas, on le crée en lui donnant X et Y directement
+    if (clientId_to_remotePlayer.find(client_id) == clientId_to_remotePlayer.end())
+    {
+        INFO("Received a new client ID (" + String::num_int64(client_id) + ")" + " with initial position (" + String::num_int64(x) + ", " + String::num_int64(y) + ")");
+
+        // On passe x et y à la fonction GDScript !
+        Variant result = call("register_node", x, y);
+
+        Node* newNode = Object::cast_to<Node>(result);
+        clientId_to_remotePlayer[client_id] = RemotePlayer{newNode};
+
+
+        ::OK("New player registered with client ID: " + String::num_int64(client_id));
+    }
+    else
+    {
+        //INFO("Received position update for existing client ID (" + String::num_int64(client_id) + ")" + " with new position (" + String::num_int64(x) + ", " + String::num_int64(y) + ")");
+
+        // 3. Mise à jour de la position pour les frames suivantes
+        Variant pos = Vector2(x, y);
+        Node* RemotePlayerNode = clientId_to_remotePlayer[client_id].node;
+
+        // call_deferred est plus sûr pour la physique que call tout court
+        RemotePlayerNode->call_deferred("set_position", pos);
+
+        //::OK("Updated position of player with client ID: " + String::num_int64(client_id) + " to (" + String::num_int64(x) + ", " + String::num_int64(y) + ")");
+    }
+}
+
+#include <unordered_map>
+
+void GDNetworkManager::update_world_state(double delta)
+{
+    currentRanderFrameId += SERVER_FPS * delta;
+
+    WorldStatePacket prev_packet;
+    WorldStatePacket next_packet;
+    bool found_prev = false;
+    bool found_next = false;
+
+    for (int i = 0; i < world_state_buffer.size(); i++)
+    {
+        //INFO("Checking world state packet with frame ID: " + String::num_real(world_state_buffer[i].frame_id) + " against current render frame ID: " + String::num_real(currentRanderFrameId));
+
+        if (world_state_buffer[i].frame_id <= currentRanderFrameId)
+        {
+            prev_packet = world_state_buffer[i];
+            found_prev = true;
+        }
+        else
+        {
+            next_packet = world_state_buffer[i];
+            found_next = true;
+            break;
+        }
+    }
+
+    if (!found_prev || !found_next || next_packet.frame_id == prev_packet.frame_id)
+    {
+        if (!world_state_buffer.empty() && currentRanderFrameId < world_state_buffer[0].frame_id)
+        {
+            // On est en train d'attendre (ex: l'horloge est à 98, la 1ère frame est 100).
+            // On quitte la fonction silencieusement pour cette frame. Les joueurs restent invisibles ou figés.
+            return;
+        }
+
+        ERR("Not enough world state packets for interpolation or identical frame IDs. For frame ID : " + String::num_real(currentRanderFrameId) + " | Found prev: " + (found_prev?"TRUE":"FALSE") + " | Found next: " + (found_next?"TRUE":"FALSE")  + " | Prev frame ID: " + String::num_real(prev_packet.frame_id) + " | Next frame ID: " + String::num_real(next_packet.frame_id));
+        ERR("Network desynchronization or fatal error. Quitting game...");
+
+        _logout();
+
+        get_tree()->quit();
+
+        return;
+    }
+
+    float t = (currentRanderFrameId - prev_packet.frame_id) / float(next_packet.frame_id - prev_packet.frame_id);
+
+    std::unordered_map<uint32_t, std::pair<int, int>> next_positions;
+    int j = 0;
+    while (j < next_packet.data.size())
+    {
+        PacketType type = static_cast<PacketType>(next_packet.data[j]);
+        j++;
+        if (type == PacketType::LOCATION)
+        {
+            if (j + sizeof(uint32_t) + sizeof(int) * 2 > next_packet.data.size()) break;
+
+            uint32_t id;
+            int next_x, next_y;
+            std::memcpy(&id, next_packet.data.data() + j, sizeof(uint32_t)); j += sizeof(uint32_t);
+            std::memcpy(&next_x, next_packet.data.data() + j, sizeof(int)); j += sizeof(int);
+            std::memcpy(&next_y, next_packet.data.data() + j, sizeof(int)); j += sizeof(int);
+
+            next_positions[id] = {next_x, next_y}; // On range pour plus tard
+        }
+        else break;
+    }
+
+    int i = 0;
+    while (i < prev_packet.data.size())
+    {
+        PacketType type = static_cast<PacketType>(prev_packet.data[i]);
+        i++;
+
+        if (type == PacketType::LOCATION)
+        {
+            //INFO("Processing LOCATION packet in world state interpolation...");
+
+            if (i + sizeof(uint32_t) + sizeof(int) * 2 > prev_packet.data.size()) break;
+
+            uint32_t client_id;
+            int xPrev, yPrev;
+            std::memcpy(&client_id, prev_packet.data.data() + i, sizeof(uint32_t)); i += sizeof(uint32_t);
+            std::memcpy(&xPrev, prev_packet.data.data() + i, sizeof(int)); i += sizeof(int);
+            std::memcpy(&yPrev, prev_packet.data.data() + i, sizeof(int)); i += sizeof(int);
+
+            if (client_id == idForServer)
+            {
+                INFO("Skipping interpolation for our own client ID: " + String::num_int64(client_id));
+                continue; // On ignore notre propre position
+            }
+
+            INFO("Found client ID " + String::num_int64(client_id) + " in previous world state with position (" + String::num_int64(xPrev) + ", " + String::num_int64(yPrev) + ")");
+
+            // Avons-nous trouvé sa destination dans le next_packet ?
+            if (next_positions.find(client_id) != next_positions.end())
+            {
+                int xNext = next_positions[client_id].first;
+                int yNext = next_positions[client_id].second;
+
+                // INTERPOLATION O(1) !
+                int xInterpolated = xPrev + t * (xNext - xPrev);
+                int yInterpolated = yPrev + t * (yNext - yPrev);
+
+                update_player_location(client_id, xInterpolated, yInterpolated);
+            }
+            else
+            {
+                // Si on a le joueur en prev mais pas en next, on applique juste prev en attendant
+                update_player_location(client_id, xPrev, yPrev);
+            }
+        }
+        else break;
+    }
+
+    while (world_state_buffer.size() > 2 && world_state_buffer[1].frame_id <= currentRanderFrameId)
+    {
+        world_state_buffer.erase(world_state_buffer.begin());
+    }
+}
+
 bool GDNetworkManager::poll()
 {
     if (udp_socket == INVALID_SOCKET) {
@@ -262,44 +440,19 @@ bool GDNetworkManager::poll()
             {
                 idForServer = client_id;
 
-                INFO_SERVER("Server send ID info, my id is " + String::num_int64(client_id), sender_ip.c_str(), sender_port, type);
-                break;
-            }
-            case PacketType::LOCATION:
-            {
-                if (client_id == idForServer) {
-                    break; // On ignore notre propre position
-                }
-
-                // 1. ON LIT X ET Y EN PREMIER !
-                int x, y;
-                std::memcpy(&x, dataWithoutPacketTypeAndClientID.data(), sizeof(int));
-                std::memcpy(&y, dataWithoutPacketTypeAndClientID.data() + sizeof(int), sizeof(int));
-
-                // 2. Si le joueur n'existe pas, on le crée en lui donnant X et Y directement
-                if (clientId_to_remotePlayer.find(client_id) == clientId_to_remotePlayer.end())
+                //recup de frame id du serveur
+                if (dataWithoutPacketTypeAndClientID.size() < sizeof(uint32_t))
                 {
-                    INFO("Received a new client ID (" + String::num_int64(client_id) + ")" + " with initial position (" + String::num_int64(x) + ", " + String::num_int64(y) + ")");
-
-                    // On passe x et y à la fonction GDScript !
-                    Variant result = call("register_node", x, y);
-
-                    Node* newNode = Object::cast_to<Node>(result);
-                    clientId_to_remotePlayer[client_id] = RemotePlayer{newNode};
-                }
-                else
-                {
-                    INFO("Received position update for existing client ID (" + String::num_int64(client_id) + ")" + " with new position (" + String::num_int64(x) + ", " + String::num_int64(y) + ")");
-
-                    // 3. Mise à jour de la position pour les frames suivantes
-                    Variant pos = Vector2(x, y);
-                    Node* RemotePlayerNode = clientId_to_remotePlayer[client_id].node;
-
-                    // call_deferred est plus sûr pour la physique que call tout court
-                    RemotePlayerNode->call_deferred("set_position", pos);
-
+                    UtilityFunctions::printerr("Received LOGIN packet with insufficient data from ", sender_ip.c_str(), ":", sender_port);
                     break;
                 }
+
+                int currentRanderFrameIdTemp = 0;
+                std::memcpy(&currentRanderFrameIdTemp, dataWithoutPacketTypeAndClientID.data(), sizeof(uint32_t));
+                currentRanderFrameId = currentRanderFrameIdTemp - RENDER_DELAY;
+
+                INFO_SERVER("Server send login info, my id is " + String::num_int64(client_id) + " | Initial frame ID: " + String::num_real(currentRanderFrameId), sender_ip.c_str(), sender_port, type);
+                break;
             }
             case PacketType::PING:
             {
@@ -322,6 +475,18 @@ bool GDNetworkManager::poll()
                 uint64_t rtt = now - ping_resp.timestamp0;
 
                 INFO_SERVER("Received PING from client " + String::num_int64(client_id) + " | RTT: " + String::num_int64(rtt) + " ms", sender_ip.c_str(), sender_port, type);
+
+                break;
+            }
+            case PacketType::WORLDSTATE:
+            {
+                WorldStatePacket world_state_pkt;
+                std::memcpy(&world_state_pkt.frame_id, dataWithoutPacketTypeAndClientID.data(), sizeof(uint32_t));
+                world_state_pkt.data.assign(dataWithoutPacketTypeAndClientID.begin() + sizeof(uint32_t), dataWithoutPacketTypeAndClientID.end());
+
+                world_state_buffer.push_back(world_state_pkt);
+
+                INFO_SERVER("Received WORLDSTATE packet with frame ID " + String::num_int64(world_state_pkt.frame_id) + " and data size " + String::num_int64(world_state_pkt.data.size()) + " bytes", sender_ip.c_str(), sender_port, type);
 
                 break;
             }
@@ -433,9 +598,11 @@ GDNetworkManager::~GDNetworkManager()
 
 void GDNetworkManager::_process(double delta)
 {
-    // Add tick computation there
-    while (poll()) {
-        // Process all incoming packets until there are no more to process
+    while (poll()) {/*Process all incoming packets until there are no more to process*/}
+
+    if (world_state_buffer.size() > WORLD_STATE_BUFFER_SIZE)
+    {
+        update_world_state(delta);
     }
 }
 

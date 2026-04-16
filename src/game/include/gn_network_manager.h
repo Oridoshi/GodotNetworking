@@ -82,7 +82,14 @@ namespace godot {
         // Var pour le ping
         bool keep_pinging = true;
         int next_ping_id = 0;
-        int ping_interval = 5; // Intervalle de ping en secondes
+        int ping_interval = 5; // en s
+
+        //Var pour le WorldState
+        std::vector<WorldStatePacket> world_state_buffer;
+        float currentRanderFrameId = -1.0;
+        const int SERVER_FPS = 60;
+        const int WORLD_STATE_BUFFER_SIZE = 3;
+        const int RENDER_DELAY = 2; // en secondes, pour compenser le délai de réception des paquets et lisser les mouvements
 
     protected:
 
@@ -109,6 +116,10 @@ namespace godot {
         void ping_server();
 
         void send_ping();
+
+        void update_player_location(uint32_t client_id, int x, int y);
+
+        void update_world_state(double delta);
 
     protected:
         static void _bind_methods();
