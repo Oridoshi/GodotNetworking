@@ -7,10 +7,11 @@
 
 [node name="Main" type="Node" unique_id=462397334]
 
-[node name="GDNetworkManager" type="GDNetworkManager" parent="." unique_id=1274457594 node_paths=PackedStringArray("PlayerManager")]
+[node name="GDNetworkManager" type="GDNetworkManager" parent="." unique_id=1274457594 node_paths=PackedStringArray("PlayerManager", "LocalPlayerControler")]
 script = ExtResource("1_sugp2")
 PlayerManager = NodePath("../Game/Map/RemotePlayerManager")
 PLAYER_SCENE = ExtResource("2_jyhfs")
+LocalPlayerControler = NodePath("../Game/Map/PlayerController")
 
 [node name="Game" type="Node2D" parent="." unique_id=1784466529]
 
@@ -39,6 +40,8 @@ tile_set = ExtResource("1_0wfyh")
 tile_set = ExtResource("1_0wfyh")
 
 [node name="PlayerController" parent="Game/Map" unique_id=1630829978 node_paths=PackedStringArray("NET_MANAGER") instance=ExtResource("3_jyhfs")]
+position = Vector2(-59, -48)
 NET_MANAGER = NodePath("../../../GDNetworkManager")
 
 [node name="RemotePlayerManager" type="Node2D" parent="Game/Map" unique_id=406651564]
+position = Vector2(74, -33)

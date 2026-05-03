@@ -73,6 +73,21 @@ void INFO_SERVER(String msg, String sender_ip, int sender_port, PacketType type)
     UtilityFunctions::print_rich("[color=cyan][INFO SERVER][/color] ", msg, " | From: ", sender_ip, ":", sender_port, " | Type: ", type_str);
 }
 
+void INFO_CORRECTION_LOCAL_PLAYER(String msg, int type)
+{
+    String start_str;
+    String end_str = "[/color]";
+
+    switch (type) {
+        case 1:  start_str = "[color=pink]"; break;
+        case 2:  start_str = "[color=magenta]"; break;
+        case 3:  start_str = "[color=purple]"; break;
+        default: start_str = "[color=orange]"; break;
+    }
+
+    UtilityFunctions::print_rich(start_str, msg, end_str);
+}
+
 bool GDNetworkManager::bind_port()
 {
     _close_socket(); // Close any existing socket before creating a new one to ensure we don't have multiple sockets open at the same time.
@@ -231,12 +246,117 @@ void GDNetworkManager::_bind_methods() {
     // Enregistrement de send_packet
     ClassDB::bind_method(D_METHOD("send_packet", "data"), &GDNetworkManager::send_packet);
     ClassDB::bind_method(D_METHOD("send_input", "up", "down", "left", "right", "aim_x", "aim_y"), &GDNetworkManager::send_input);
+    ClassDB::bind_method(D_METHOD("add_predict_pos", "new_x", "new_y"), &GDNetworkManager::add_predict_pos);
 }
 
-void GDNetworkManager::update_player_location(uint32_t client_id, int x, int y)
+
+void GDNetworkManager::add_predict_pos(int new_x, int new_y)
 {
-    INFO("Update Loc");
-    if (client_id == idForServer) {
+    if (current_frame_id == -1)
+    {
+        WARN("Current frame ID is not initialized. Cannot add predicted position.");
+        return;
+    }
+
+    for (const auto& entry : local_location_buffer)
+    {
+        if (entry.frame_id == current_frame_id)
+        {
+            WARN("Already have a predicted position for frame ID " + String::num_int64(current_frame_id) + ", skipping new prediction.");
+            return;
+        }
+    }
+
+    // verif si on a déjà une correction pour la frame précédente, si non ERR
+    bool found_prev = false;
+    for (const auto& entry : local_location_buffer)
+    {
+        if (entry.frame_id == current_frame_id - 1)
+        {
+            found_prev = true;
+            break;
+        }
+    }
+
+    if (!found_prev && !local_location_buffer.empty())
+    {
+        ERR("No predicted position found for previous frame ID " + String::num_int64(current_frame_id - 1) + ". This should not happen, skipping prediction for current frame ID " + String::num_int64(current_frame_id) + ".");
+        return;
+    }
+
+    INFO("Added predicted position (" + String::num_int64(new_x) + ", " + String::num_int64(new_y) + ") for frame ID " + String::num_int64(current_frame_id) + " to the local location buffer.");
+
+    // Si tout est bon, on push la nouvelle position prédite pour la frame actuelle
+    local_location_buffer.push_back({current_frame_id, new_x, new_y});
+
+    // On garde que les 20 dernières prédictions pour éviter que le buffer ne grossisse indéfiniment
+    if (local_location_buffer.size() > LOCAL_LOCATION_BUFFER_SIZE)
+    {
+        size_t excess = local_location_buffer.size() - LOCAL_LOCATION_BUFFER_SIZE;
+        local_location_buffer.erase(local_location_buffer.begin(), local_location_buffer.begin() + excess);
+    }
+}
+
+void GDNetworkManager::correction_local_player(float frameID, int servX, int servY)
+{
+    //on vas chercher la prev position prédite pour la frame précédente
+    PredictionLocalLocation prevPrediction;
+    PredictionLocalLocation nextPrediction;
+
+    bool found_prev = false;
+
+    for (const auto& entry : local_location_buffer)
+    {
+        if (entry.frame_id == frameID - 1)
+        {
+            prevPrediction = entry;
+            found_prev = true;
+        }
+        else if (entry.frame_id == frameID)
+        {
+            nextPrediction = entry;
+            break;
+        }
+    }
+
+    if (!found_prev)
+    {
+        ERR("No predicted position found for previous frame ID " + String::num_int64(frameID - 1) + ". Cannot perform correction for frame ID " + String::num_int64(frameID) + ".");
+        return;
+    }
+
+    float distance = Vector2(servX, servY).distance_to(Vector2(prevPrediction.x, prevPrediction.y));
+
+    if (distance > CORRECTION_RANGE)
+    {
+        INFO_CORRECTION_LOCAL_PLAYER("Applying correction for local player. Server position: (" + String::num_int64(servX) + ", " + String::num_int64(servY) + ") | Previous prediction: (" + String::num_int64(prevPrediction.x) + ", " + String::num_int64(prevPrediction.y) + ") | Distance: " + String::num_real(distance), 2);
+
+        // Si la distance est trop grande, on snap directement à la position du serveur
+        call_deferred("set_local_player_position", servX, servY);
+    }
+    else if (distance > THRESHOLD_LOCAL_LOCATION)
+    {
+        INFO_CORRECTION_LOCAL_PLAYER("Applying smooth correction for local player. Server position: (" + String::num_int64(servX) + ", " + String::num_int64(servY) + ") | Previous prediction: (" + String::num_int64(prevPrediction.x) + ", " + String::num_int64(prevPrediction.y) + ") | Distance: " + String::num_real(distance), 1);
+
+        // Si la distance est modérée, on applique une correction lissée
+        float correction_factor = (distance - THRESHOLD_LOCAL_LOCATION) / (CORRECTION_RANGE - THRESHOLD_LOCAL_LOCATION);
+        int corrected_x = prevPrediction.x + correction_factor * (servX - prevPrediction.x);
+        int corrected_y = prevPrediction.y + correction_factor * (servY - prevPrediction.y);
+
+        call_deferred("set_local_player_position", corrected_x, corrected_y);
+    }
+    else
+    {
+        INFO_CORRECTION_LOCAL_PLAYER("No correction needed for local player. Server position: (" + String::num_int64(servX) + ", " + String::num_int64(servY) + ") | Previous prediction: (" + String::num_int64(prevPrediction.x) + ", " + String::num_int64(prevPrediction.y) + ") | Distance: " + String::num_real(distance), 3);
+    }
+}
+
+void GDNetworkManager::update_player_location(int frameID, uint32_t client_id, int x, int y)
+{
+    if (client_id == idForServer)
+    {
+        INFO_CORRECTION_LOCAL_PLAYER("Received position update for local player with client ID (" + String::num_int64(client_id) + ")" + " with new position (" + String::num_int64(x) + ", " + String::num_int64(y) + ")", 1);
+        correction_local_player(frameID, x, y);
         return; // On ignore notre propre position
     }
 
@@ -259,8 +379,13 @@ void GDNetworkManager::update_player_location(uint32_t client_id, int x, int y)
         //INFO("Received position update for existing client ID (" + String::num_int64(client_id) + ")" + " with new position (" + String::num_int64(x) + ", " + String::num_int64(y) + ")");
 
         // 3. Mise à jour de la position pour les frames suivantes
-        Variant pos = Vector2(x, y);
+        Vector2 pos = Vector2(x, y);
         Node* RemotePlayerNode = clientId_to_remotePlayer[client_id].node;
+
+        Vector2 prevPos = RemotePlayerNode->call("get_position");
+        Vector2 direction = pos - prevPos;
+        RemotePlayerNode->call("AnimationHandle", direction);
+        RemotePlayerNode->call("RotationHandle", direction);
 
         // call_deferred est plus sûr pour la physique que call tout court
         RemotePlayerNode->call_deferred("set_position", pos);
@@ -273,7 +398,7 @@ void GDNetworkManager::update_player_location(uint32_t client_id, int x, int y)
 
 void GDNetworkManager::update_world_state(double delta)
 {
-    currentRanderFrameId += SERVER_FPS * delta;
+    currentRanderServerFrameId += SERVER_FPS * delta;
 
     WorldStatePacket prev_packet;
     WorldStatePacket next_packet;
@@ -284,7 +409,7 @@ void GDNetworkManager::update_world_state(double delta)
     {
         //INFO("Checking world state packet with frame ID: " + String::num_real(world_state_buffer[i].frame_id) + " against current render frame ID: " + String::num_real(currentRanderFrameId));
 
-        if (world_state_buffer[i].frame_id <= currentRanderFrameId)
+        if (world_state_buffer[i].frame_id <= currentRanderServerFrameId)
         {
             prev_packet = world_state_buffer[i];
             found_prev = true;
@@ -299,14 +424,14 @@ void GDNetworkManager::update_world_state(double delta)
 
     if (!found_prev || !found_next || next_packet.frame_id == prev_packet.frame_id)
     {
-        if (!world_state_buffer.empty() && currentRanderFrameId < world_state_buffer[0].frame_id)
+        if (!world_state_buffer.empty() && currentRanderServerFrameId < world_state_buffer[0].frame_id)
         {
             // On est en train d'attendre (ex: l'horloge est à 98, la 1ère frame est 100).
             // On quitte la fonction silencieusement pour cette frame. Les joueurs restent invisibles ou figés.
             return;
         }
 
-        ERR("Not enough world state packets for interpolation or identical frame IDs. For frame ID : " + String::num_real(currentRanderFrameId) + " | Found prev: " + (found_prev?"TRUE":"FALSE") + " | Found next: " + (found_next?"TRUE":"FALSE")  + " | Prev frame ID: " + String::num_real(prev_packet.frame_id) + " | Next frame ID: " + String::num_real(next_packet.frame_id));
+        ERR("Not enough world state packets for interpolation or identical frame IDs. For frame ID : " + String::num_real(currentRanderServerFrameId) + " | Found prev: " + (found_prev?"TRUE":"FALSE") + " | Found next: " + (found_next?"TRUE":"FALSE")  + " | Prev frame ID: " + String::num_real(prev_packet.frame_id) + " | Next frame ID: " + String::num_real(next_packet.frame_id));
         ERR("Network desynchronization or fatal error. Quitting game...");
 
         _logout();
@@ -316,7 +441,7 @@ void GDNetworkManager::update_world_state(double delta)
         return;
     }
 
-    float t = (currentRanderFrameId - prev_packet.frame_id) / float(next_packet.frame_id - prev_packet.frame_id);
+    float t = (currentRanderServerFrameId - prev_packet.frame_id) / float(next_packet.frame_id - prev_packet.frame_id);
 
     std::unordered_map<uint32_t, std::pair<int, int>> next_positions;
     int j = 0;
@@ -357,12 +482,6 @@ void GDNetworkManager::update_world_state(double delta)
             std::memcpy(&xPrev, prev_packet.data.data() + i, sizeof(int)); i += sizeof(int);
             std::memcpy(&yPrev, prev_packet.data.data() + i, sizeof(int)); i += sizeof(int);
 
-            if (client_id == idForServer)
-            {
-                INFO("Skipping interpolation for our own client ID: " + String::num_int64(client_id));
-                continue; // On ignore notre propre position
-            }
-
             INFO("Found client ID " + String::num_int64(client_id) + " in previous world state with position (" + String::num_int64(xPrev) + ", " + String::num_int64(yPrev) + ")");
 
             // Avons-nous trouvé sa destination dans le next_packet ?
@@ -375,18 +494,18 @@ void GDNetworkManager::update_world_state(double delta)
                 int xInterpolated = xPrev + t * (xNext - xPrev);
                 int yInterpolated = yPrev + t * (yNext - yPrev);
 
-                update_player_location(client_id, xInterpolated, yInterpolated);
+                update_player_location(currentRanderServerFrameId, client_id, xInterpolated, yInterpolated);
             }
             else
             {
                 // Si on a le joueur en prev mais pas en next, on applique juste prev en attendant
-                update_player_location(client_id, xPrev, yPrev);
+                update_player_location(currentRanderServerFrameId, client_id, xPrev, yPrev);
             }
         }
         else break;
     }
 
-    while (world_state_buffer.size() > 2 && world_state_buffer[1].frame_id <= currentRanderFrameId)
+    while (world_state_buffer.size() > 2 && world_state_buffer[1].frame_id <= currentRanderServerFrameId)
     {
         world_state_buffer.erase(world_state_buffer.begin());
     }
@@ -412,7 +531,7 @@ bool GDNetworkManager::poll()
         Packet pkt;
         pkt.sender = client_addr;
         pkt.data.assign(buffer, buffer + recv_len);
-        UtilityFunctions::print("Packet received from ", inet_ntoa(client_addr.sin_addr), ":", ntohs(client_addr.sin_port), " | Size: ", recv_len, " bytes");
+        //UtilityFunctions::print("Packet received from ", inet_ntoa(client_addr.sin_addr), ":", ntohs(client_addr.sin_port), " | Size: ", recv_len, " bytes");
 
         //sender
         std::string sender_ip = inet_ntoa(pkt.sender.sin_addr);
@@ -449,9 +568,11 @@ bool GDNetworkManager::poll()
 
                 int currentRanderFrameIdTemp = 0;
                 std::memcpy(&currentRanderFrameIdTemp, dataWithoutPacketTypeAndClientID.data(), sizeof(uint32_t));
-                currentRanderFrameId = currentRanderFrameIdTemp - RENDER_DELAY;
+                currentRanderServerFrameId = currentRanderFrameIdTemp - RENDER_DELAY;
+                current_frame_id = currentRanderFrameIdTemp;
+                //current_frame_id = currentRanderServerFrameId;
 
-                INFO_SERVER("Server send login info, my id is " + String::num_int64(client_id) + " | Initial frame ID: " + String::num_real(currentRanderFrameId), sender_ip.c_str(), sender_port, type);
+                INFO_SERVER("Server send login info, my id is " + String::num_int64(client_id) + " | Initial frame ID: " + String::num_real(currentRanderServerFrameId), sender_ip.c_str(), sender_port, type);
                 break;
             }
             case PacketType::PING:
@@ -604,6 +725,17 @@ void GDNetworkManager::_process(double delta)
     {
         update_world_state(delta);
     }
+}
+
+void GDNetworkManager::_physics_process(double delta)
+{
+    if (current_frame_id == -1)
+    {
+        // On n'a pas encore reçu de frame ID du serveur, on ne peut pas faire de prédiction
+        return;
+    }
+
+    current_frame_id++;
 }
 
 void GDNetworkManager::_ready() {
