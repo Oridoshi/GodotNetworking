@@ -3,22 +3,22 @@
 // Method to make some log
 void OK(std::string msg)
 {
-    std::cout << "[OK] " << msg << std::endl;
+    std::cout << GREEN << "[OK] " << msg << RESET << std::endl;
 }
 
 void ERR(std::string msg)
 {
-    std::cerr << "[ERROR] " << msg << std::endl;
+    std::cerr << RED << "[ERROR] " << msg << RESET << std::endl;
 }
 
 void WARN(std::string msg)
 {
-    std::cerr << "[WARNING] " << msg << std::endl;
+    std::cerr << YELLOW << "[WARNING] " << msg << RESET << std::endl;
 }
 
 void INFO(std::string msg)
 {
-    std::cout << "[INFO] " << msg << std::endl;
+    std::cout << BLUE << "[INFO] " << msg << RESET << std::endl;
 }
 
 void INFO_FROM_CLIENT(std::string msg, std::string sender_ip, int sender_port, PacketType type)
@@ -27,13 +27,15 @@ void INFO_FROM_CLIENT(std::string msg, std::string sender_ip, int sender_port, P
     switch (type) {
         case PacketType::LOGIN: type_str = "LOGIN"; break;
         case PacketType::INPUT: type_str = "INPUT"; break;
-        case PacketType::LOCATION: type_str = "LOCATION"; break;
         case PacketType::PING: type_str = "PING"; break;
         case PacketType::LOGOUT: type_str = "LOGOUT"; break;
-        default: type_str = "UNKNOWN"; break;
+        default:
+            type_str = "UNKNOWN";
+            WARN("UNKNOWN PACKET TYPE FROM CLIENT: " + std::to_string(static_cast<int>(type)) + " | From: " + sender_ip + ":" + std::to_string(sender_port) + " | Type: " + std::to_string(static_cast<int>(type)));
+            break;
     }
 
-    std::cout << "[INFO CLIENT] " << msg << " | From: " << sender_ip << ":" << sender_port << " | Type: " << type_str << std::endl;
+    std::cout << CYAN << "[INFO CLIENT] " << msg << " | From: " << sender_ip << ":" << sender_port << " | Type: " << type_str << RESET << std::endl;
 }
 
 /**
@@ -167,7 +169,7 @@ void send_packet(PacketType type, uint32_t id, std::string ip, int port, std::ve
 #endif
         ERR("Failed to send packet to " + ip + ":" + std::to_string(port) + " | Error code: " + std::to_string(err));
     } else {
-        INFO("Packet sent to " + ip + ":" + std::to_string(port) + " | Type: " + std::to_string(static_cast<int>(type)) + " | ID: " + std::to_string(id) + " | Data size: " + std::to_string(data.size()) + " bytes");
+        //INFO("Packet sent to " + ip + ":" + std::to_string(port) + " | Type: " + std::to_string(static_cast<int>(type)) + " | ID: " + std::to_string(id) + " | Data size: " + std::to_string(packet.size()) + " bytes");
     }
 }
 
@@ -190,14 +192,14 @@ bool poll()
         Packet pkt;
         pkt.sender = client_addr;
         pkt.data.assign(buffer, buffer + recv_len);
-        INFO("Packet received from " + std::string(inet_ntoa(client_addr.sin_addr)) + ":" + std::to_string(ntohs(client_addr.sin_port)) + " | Size: " + std::to_string(recv_len) + " bytes");
+        //INFO_FROM_CLIENT("Packet received from " + std::string(inet_ntoa(client_addr.sin_addr)) + ":" + std::to_string(ntohs(client_addr.sin_port)) + " | Size: " + std::to_string(recv_len) + " bytes", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port), PacketType(pkt.data[sizeof(uint32_t)]));
 
         {
             std::lock_guard<std::mutex> lock(nctx->queue_mutex);
             nctx->incoming_packets.push(pkt);
         }
 
-        INFO("Added packet to the incoming queue. Queue size: " + std::to_string(nctx->incoming_packets.size()));
+        //INFO("Added packet to the incoming queue. Queue size: " + std::to_string(nctx->incoming_packets.size()));
 
         return true;
     }
@@ -240,9 +242,6 @@ void player_location_interpolation(InputPacket pkt, entt::entity entity)
     if (pkt.keys & 2) loc.y += SPEED / TICK_RATE; // Down
     if (pkt.keys & 4) loc.x -= SPEED / TICK_RATE; // Left
     if (pkt.keys & 8) loc.x += SPEED / TICK_RATE; // Right
-
-    // On met à jour le flag pour indiquer que la position doit être diffusée aux autres clients
-    loc.needToBroadcast = true;
 
     // Log de la nouvelle position du joueur
     INFO("Updated position of player " + std::to_string(static_cast<uint32_t>(entity)) + ": (" + std::to_string(loc.x) + ", " + std::to_string(loc.y) + ")");
@@ -318,7 +317,7 @@ void read_incoming_packet()
 
                 entt::entity new_entity = registry->create();
                 INFO("Added new client to the registry: " + std::to_string(static_cast<uint32_t>(new_entity)));
-                clients[idPlayerStatic++] = new_entity;
+                clients[net_id++] = new_entity;
 
                 //ajout des location du joueur
                 int x, y;
@@ -333,34 +332,22 @@ void read_incoming_packet()
                 registry->emplace<PlayerConnectionInfo>(new_entity, sender_ip, sender_port);
 
                 //set inital location
-                registry->emplace<Location>(new_entity, x, y, true);
+                registry->emplace<Location>(new_entity, x, y);
 
                 //print la position du joueur
                 INFO("Initial position of the new player: (" + std::to_string(x) + ", " + std::to_string(y) + ")");
 
-                //envois de l'id au joueur
+
+                //envois info de login au player
                 std::vector<char> packet_data;
-                uint32_t client_id = idPlayerStatic - 1; // L'id du client est l'id de l'entité dans le registre, qui correspond à idPlayerStatic - 1
-                packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&client_id), reinterpret_cast<char*>(&client_id) + sizeof(uint32_t));
+                uint32_t client_id = net_id - 1; // L'id du client est l'id de l'entité dans le registre, qui correspond à idPlayerStatic - 1
+
+                LoginPacket login_pkt;
+                login_pkt.frame_id = frame_id;
+                packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&login_pkt.frame_id), reinterpret_cast<char*>(&login_pkt.frame_id) + sizeof(uint32_t));
+
+                INFO("Sending LOGIN response to client " + std::to_string(client_id) + " with initial frame ID: " + std::to_string(login_pkt.frame_id));
                 send_packet(PacketType::LOGIN, client_id, sender_ip, sender_port, packet_data);
-
-                //Send all the other client positions to the new client
-                for (const auto& [other_client_key, other_entity] : clients)
-                {
-                    if (other_client_key == client_id) continue; // Skip the new client itself
-
-                    INFO("Sending position of client " + std::to_string(other_client_key) + " to the new client " + std::to_string(client_id));
-
-                    Location& loc = registry->get<Location>(other_entity);
-
-                    std::vector<char> packet_data;
-                    int x = loc.x;
-                    int y = loc.y;
-                    packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&x), reinterpret_cast<char*>(&x) + sizeof(int));
-                    packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&y), reinterpret_cast<char*>(&y) + sizeof(int));
-
-                    send_packet(PacketType::LOCATION, other_client_key, sender_ip, sender_port, packet_data);
-                }
                 break;
             }
             case PacketType::INPUT:
@@ -499,36 +486,37 @@ void read_incoming_packet()
 
 void update()
 {
-    //envoie des positions de tous les joueurs à tous les joueurs
+    frame_id++;
+
+    // 1. On prépare les données des joueurs
+    std::vector<char> world_state_data;
+
     for (const auto& [client_key, entity] : clients)
     {
         Location& loc = registry->get<Location>(entity);
 
-        if (loc.needToBroadcast)
-        {
-            // On construit le packet à envoyer
-            std::vector<char> packet_data;
+        LocationPacket loc_pkt;
+        loc_pkt.player_net_id = client_key;
+        loc_pkt.x = loc.x;
+        loc_pkt.y = loc.y;
 
-            // Ajout de X et Y au packet
-            int x = loc.x;
-            int y = loc.y;
-            packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&x), reinterpret_cast<char*>(&x) + sizeof(int));
-            packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&y), reinterpret_cast<char*>(&y) + sizeof(int));
+        world_state_data.push_back(static_cast<char>(PacketType::LOCATION));
+        const char* raw_data = reinterpret_cast<const char*>(&loc_pkt);
+        world_state_data.insert(world_state_data.end(), raw_data, raw_data + sizeof(LocationPacket));
+    }
 
-            // Envoi du packet à tous les clients
-            for (const auto& [other_client_key, other_entity] : clients) {
-                //if (other_client_key == client_key) continue;
+    std::vector<char> packet_data;
+    packet_data.reserve(sizeof(uint32_t) + world_state_data.size());
+    packet_data.insert(packet_data.end(), reinterpret_cast<char*>(&frame_id), reinterpret_cast<char*>(&frame_id) + sizeof(uint32_t));
+    packet_data.insert(packet_data.end(), world_state_data.begin(), world_state_data.end());
 
-                PlayerConnectionInfo& info = registry->get<PlayerConnectionInfo>(other_entity);
-                std::string ip = info.ip;
-                int port = info.port;
+    for (const auto& [client_key, entity] : clients)
+    {
+        PlayerConnectionInfo& info = registry->get<PlayerConnectionInfo>(entity);
+        std::string ip = info.ip;
+        int port = info.port;
 
-                send_packet(PacketType::LOCATION, client_key, ip, port, packet_data);
-            }
-
-            // On reset le flag de broadcast
-            loc.needToBroadcast = false;
-        }
+        send_packet(PacketType::WORLDSTATE, client_key, ip, port, packet_data);
     }
 }
 
@@ -556,14 +544,22 @@ int main() {
     INFO("Demarrage du thread reseau...");
     std::thread net_thread(network_worker, nctx);
 
-    while (running) {
-        // Read all incoming packets
-        read_incoming_packet();
+    // On utilise les microsecondes pour ne pas perdre en précision.
+    const std::chrono::microseconds TARGET_FRAME_TIME(16666);
 
+    // On fixe l'heure cible de la toute première frame
+    auto next_frame_time = std::chrono::steady_clock::now() + TARGET_FRAME_TIME;
+
+    while (running) {
+        // 1. On travaille
+        read_incoming_packet();
         update();
 
-        // On dort un peu pour ne pas brûler le CPU (60 FPS)
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        // 2. On dort pile poil le temps restant jusqu'à l'heure cible
+        std::this_thread::sleep_until(next_frame_time);
+
+        // 3. On programme l'heure cible de la boucle suivante (+ 16.666 ms)
+        next_frame_time += TARGET_FRAME_TIME;
     }
 
     net_thread.join(); // Wait for the network thread to finish before exiting the main thread

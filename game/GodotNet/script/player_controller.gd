@@ -33,12 +33,12 @@ func InitalLocationData() -> PackedByteArray:
 	var spb = StreamPeerBuffer.new()
 	
 	# Il gère le curseur et la taille tout seul
-	spb.put_u32(position.x)
-	spb.put_u32(position.y)
+	spb.put_u32(player.position.x)
+	spb.put_u32(player.position.y)
 	
 	return spb.data_array
 
-func DataToServerHanlde (direction: Vector2) -> void:
+func DataToServerHanlde(direction: Vector2) -> void:
 	var bNeedToSend = false
 	if direction.x > 0 or direction.x < 0 or direction.y > 0 or direction.y < 0 :
 		bNeedToSend = true
@@ -46,3 +46,8 @@ func DataToServerHanlde (direction: Vector2) -> void:
 	if(bNeedToSend):
 		var mouse_pos = get_global_mouse_position()
 		NET_MANAGER.send_input(direction.y < 0, direction.y > 0, direction.x < 0, direction.x > 0, mouse_pos.x, mouse_pos.y)
+	
+	NET_MANAGER.add_predict_pos(player.position.x, player.position.y)
+
+func set_player_position(new_pos: Vector2):
+	player.set_position(new_pos)

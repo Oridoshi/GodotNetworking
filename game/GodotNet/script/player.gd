@@ -48,3 +48,6 @@ func AnimationHandle (direction: Vector2) -> void:
 
 func SetAsLocalPlayer () -> void:
 	bIsLocalPlayer = true
+	
+func getPosition() -> Vector2:
+	return position

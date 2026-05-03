@@ -1,6 +1,7 @@
 extends GDNetworkManager
 @export var PlayerManager : Node;
 @export var PLAYER_SCENE: PackedScene;
+@export var LocalPlayerControler : Node;
 
 enum PacketType {
 	LOGIN      = 0,
@@ -22,3 +23,7 @@ func register_node(spawn_x: int, spawn_y: int) -> Node:
 	PlayerManager.add_child(newPlayer)
 	
 	return newPlayer
+
+func set_local_player_position(servX: int, servY: int):
+	var newPos: Vector2 = Vector2(servX, servY)
+	LocalPlayerControler.set_player_position(newPos)

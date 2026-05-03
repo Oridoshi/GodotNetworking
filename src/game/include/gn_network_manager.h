@@ -25,6 +25,9 @@
 
 #include "../commun/protocol.hpp"
 
+struct PredictionLocalLocation {
+    int frame_id{}, x{},y{};
+};
 
 namespace godot {
     struct GDReplicatedNode {
@@ -82,7 +85,21 @@ namespace godot {
         // Var pour le ping
         bool keep_pinging = true;
         int next_ping_id = 0;
-        int ping_interval = 5; // Intervalle de ping en secondes
+        int ping_interval = 5; // en s
+
+        //Var pour le WorldState
+        std::vector<WorldStatePacket> world_state_buffer;
+        float currentRanderServerFrameId = -1.0;
+        const int SERVER_FPS = 60;
+        const int WORLD_STATE_BUFFER_SIZE = 20;
+        const int RENDER_DELAY = 2; // en secondes, pour compenser le délai de réception des paquets et lisser les mouvements
+
+        //Var pour la correction de la position du joueur local
+        int   current_frame_id = -1;
+        float THRESHOLD_LOCAL_LOCATION = 5;
+        float CORRECTION_RANGE = 20; // plus sa snap
+        int   LOCAL_LOCATION_BUFFER_SIZE = 100;
+        std::vector<PredictionLocalLocation> local_location_buffer;
 
     protected:
 
@@ -110,14 +127,22 @@ namespace godot {
 
         void send_ping();
 
+        void update_player_location(int frameID, uint32_t client_id, int x, int y);
+
+        void update_world_state(double delta);
+
     protected:
         static void _bind_methods();
+
+        void correction_local_player(float frameID, int servX, int servY);
 
     public:
         GDNetworkManager();
         ~GDNetworkManager();
 
         void _process(double delta) override;
+
+        void _physics_process(double delta);
 
         void _ready() override;
 
@@ -135,6 +160,8 @@ namespace godot {
         void send_packet(int type, PackedByteArray data);
 
         void send_input(bool up, bool down, bool left, bool right, float aim_x, float aim_y);
+
+        void add_predict_pos(int new_x, int new_y);
 
         // Check for incoming packets (Call this in _process)
         bool poll();
