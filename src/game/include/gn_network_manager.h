@@ -95,6 +95,7 @@ namespace godot {
         const int RENDER_DELAY = 2; // en secondes, pour compenser le délai de réception des paquets et lisser les mouvements
 
         //Var pour la correction de la position du joueur local
+        uint64_t   timestamp_login_send;
         int   current_frame_id = -1;
         float THRESHOLD_LOCAL_LOCATION = 5;
         float CORRECTION_RANGE = 20; // plus sa snap

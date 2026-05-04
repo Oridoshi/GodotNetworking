@@ -1,5 +1,6 @@
 #include "gn_network_manager.h"
 
+#include <algorithm>
 #include <chrono>
 #include <string>
 #include <godot_cpp/classes/worker_thread_pool.hpp>
@@ -50,7 +51,7 @@ void OK(const String& msg)
 void WARN(const String& msg)
 {
     // Affiche [WARNING] en jaune
-    UtilityFunctions::print_rich("[color=yellow][WARNING][/color] ", msg);
+    UtilityFunctions::print_rich("[color=orange][WARNING][/color] ", msg);
 }
 
 void ERR(const String& msg)
@@ -79,10 +80,10 @@ void INFO_CORRECTION_LOCAL_PLAYER(String msg, int type)
     String end_str = "[/color]";
 
     switch (type) {
-        case 1:  start_str = "[color=pink]"; break;
-        case 2:  start_str = "[color=magenta]"; break;
-        case 3:  start_str = "[color=purple]"; break;
-        default: start_str = "[color=orange]"; break;
+        case 1:  start_str = "[color=pink] [INFO_CORRECTION_LOCAL_PLAYER]"; break;
+        case 2:  start_str = "[color=magenta] [INFO_CORRECTION_LOCAL_PLAYER]"; break;
+        case 3:  start_str = "[color=purple] [INFO_CORRECTION_LOCAL_PLAYER]"; break;
+        default: start_str = "[color=orange] [INFO_CORRECTION_LOCAL_PLAYER]"; break;
     }
 
     UtilityFunctions::print_rich(start_str, msg, end_str);
@@ -175,6 +176,13 @@ void GDNetworkManager::send_packet(int type, PackedByteArray data) {
     else
     {
         UtilityFunctions::print("Packet sent (", sent_len, " bytes) to ", ip_utf8, ":", server_port);
+
+        if (type == static_cast<int>(PacketType::LOGIN))
+        {
+            timestamp_login_send = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::system_clock::now().time_since_epoch())
+                              .count();
+        }
     }
 }
 
@@ -304,50 +312,80 @@ void GDNetworkManager::correction_local_player(float frameID, int servX, int ser
     PredictionLocalLocation nextPrediction;
 
     bool found_prev = false;
+    bool found_next = false;
 
     for (const auto& entry : local_location_buffer)
     {
-        if (entry.frame_id == frameID - 1)
+        if (static_cast<float>(entry.frame_id) <= frameID && static_cast<float>(entry.frame_id) > frameID - 1 && !found_prev)
         {
             prevPrediction = entry;
             found_prev = true;
         }
-        else if (entry.frame_id == frameID)
+
+        if (found_prev)
         {
-            nextPrediction = entry;
-            break;
+            if (static_cast<float>(entry.frame_id) > frameID)
+            {
+                nextPrediction = entry;
+                found_next = true;
+                break; // On peut s'arrêter une fois qu'on a trouvé le next
+            }
         }
     }
 
-    if (!found_prev)
+    if (static_cast<float>(prevPrediction.frame_id) == frameID)
     {
-        ERR("No predicted position found for previous frame ID " + String::num_int64(frameID - 1) + ". Cannot perform correction for frame ID " + String::num_int64(frameID) + ".");
-        return;
+        float distance = Vector2(servX, servY).distance_to(Vector2(prevPrediction.x, prevPrediction.y));
+
+        if (distance > CORRECTION_RANGE)
+        {
+            INFO_CORRECTION_LOCAL_PLAYER("Applying correction for local player based on previous prediction. Server position: (" + String::num_int64(servX) + ", " + String::num_int64(servY) + ") | Previous prediction: (" + String::num_int64(prevPrediction.x) + ", " + String::num_int64(prevPrediction.y) + ") | Distance: " + String::num_real(distance), 2);
+
+            // Si la distance est trop grande, on snap directement à la position du serveur
+            call_deferred("set_local_player_position", servX, servY);
+        }
+        else if (distance > THRESHOLD_LOCAL_LOCATION)
+        {
+            INFO_CORRECTION_LOCAL_PLAYER("Applying smooth correction for local player based on previous prediction. Server position: (" + String::num_int64(servX) + ", " + String::num_int64(servY) + ") | Previous prediction: (" + String::num_int64(prevPrediction.x) + ", " + String::num_int64(prevPrediction.y) + ") | Distance: " + String::num_real(distance), 1);
+
+            //TODO: CODE RESSORT ET AMORTISEUR
+        }
+        else
+        {
+            INFO_CORRECTION_LOCAL_PLAYER("No correction needed for local player based on previous prediction. Server position: (" + String::num_int64(servX) + ", " + String::num_int64(servY) + ") | Previous prediction: (" + String::num_int64(prevPrediction.x) + ", " + String::num_int64(prevPrediction.y) + ") | Distance: " + String::num_real(distance), 3);
+        }
     }
-
-    float distance = Vector2(servX, servY).distance_to(Vector2(prevPrediction.x, prevPrediction.y));
-
-    if (distance > CORRECTION_RANGE)
+    else if (found_next)
     {
-        INFO_CORRECTION_LOCAL_PLAYER("Applying correction for local player. Server position: (" + String::num_int64(servX) + ", " + String::num_int64(servY) + ") | Previous prediction: (" + String::num_int64(prevPrediction.x) + ", " + String::num_int64(prevPrediction.y) + ") | Distance: " + String::num_real(distance), 2);
+        //calcul de la pos du joueur a frameID par rapport a prev et next
+        float t = (frameID - prevPrediction.frame_id) / float(nextPrediction.frame_id - prevPrediction.frame_id);
+        int interp_x = prevPrediction.x + t * (nextPrediction.x - prevPrediction.x);
+        int interp_y = prevPrediction.y + t * (nextPrediction.y - prevPrediction.y);
 
-        // Si la distance est trop grande, on snap directement à la position du serveur
-        call_deferred("set_local_player_position", servX, servY);
-    }
-    else if (distance > THRESHOLD_LOCAL_LOCATION)
-    {
-        INFO_CORRECTION_LOCAL_PLAYER("Applying smooth correction for local player. Server position: (" + String::num_int64(servX) + ", " + String::num_int64(servY) + ") | Previous prediction: (" + String::num_int64(prevPrediction.x) + ", " + String::num_int64(prevPrediction.y) + ") | Distance: " + String::num_real(distance), 1);
+        float distance = Vector2(servX, servY).distance_to(Vector2(interp_x, interp_y));
 
-        // Si la distance est modérée, on applique une correction lissée
-        float correction_factor = (distance - THRESHOLD_LOCAL_LOCATION) / (CORRECTION_RANGE - THRESHOLD_LOCAL_LOCATION);
-        int corrected_x = prevPrediction.x + correction_factor * (servX - prevPrediction.x);
-        int corrected_y = prevPrediction.y + correction_factor * (servY - prevPrediction.y);
+        if (distance > CORRECTION_RANGE)
+        {
+            INFO_CORRECTION_LOCAL_PLAYER("Applying correction for local player based on interpolated prediction. Server position: (" + String::num_int64(servX) + ", " + String::num_int64(servY) + ") | Interpolated prediction: (" + String::num_int64(interp_x) + ", " + String::num_int64(interp_y) + ") | Distance: " + String::num_real(distance), 2);
 
-        call_deferred("set_local_player_position", corrected_x, corrected_y);
+            // Si la distance est trop grande, on snap directement à la position du serveur
+            call_deferred("set_local_player_position", servX, servY);
+        }
+        else if (distance > THRESHOLD_LOCAL_LOCATION)
+        {
+            INFO_CORRECTION_LOCAL_PLAYER("Applying smooth correction for local player based on interpolated prediction. Server position: (" + String::num_int64(servX) + ", " + String::num_int64(servY) + ") | Interpolated prediction: (" + String::num_int64(interp_x) + ", " + String::num_int64(interp_y) + ") | Distance: " + String::num_real(distance), 1);
+
+            //TODO: CODE RESSORT ET AMORTISEUR
+        }
+        else
+        {
+            INFO_CORRECTION_LOCAL_PLAYER("No correction needed for local player based on interpolated prediction. Server position: (" + String::num_int64(servX) + ", " + String::num_int64(servY) + ") | Interpolated prediction: (" + String::num_int64(interp_x) + ", " + String::num_int64(interp_y) + ") | Distance: " + String::num_real(distance), 3);
+        }
     }
     else
     {
-        INFO_CORRECTION_LOCAL_PLAYER("No correction needed for local player. Server position: (" + String::num_int64(servX) + ", " + String::num_int64(servY) + ") | Previous prediction: (" + String::num_int64(prevPrediction.x) + ", " + String::num_int64(prevPrediction.y) + ") | Distance: " + String::num_real(distance), 3);
+        ERR("No predicted position found for next frame ID " + String::num_int64(frameID) + ". Cannot perform correction for frame ID " + String::num_int64(frameID) + ".");
+        return;
     }
 }
 
@@ -559,43 +597,78 @@ bool GDNetworkManager::poll()
             {
                 idForServer = client_id;
 
-                //recup de frame id du serveur
                 if (dataWithoutPacketTypeAndClientID.size() < sizeof(uint32_t))
                 {
                     UtilityFunctions::printerr("Received LOGIN packet with insufficient data from ", sender_ip.c_str(), ":", sender_port);
                     break;
                 }
 
-                int currentRanderFrameIdTemp = 0;
-                std::memcpy(&currentRanderFrameIdTemp, dataWithoutPacketTypeAndClientID.data(), sizeof(uint32_t));
-                currentRanderServerFrameId = currentRanderFrameIdTemp - RENDER_DELAY;
-                current_frame_id = currentRanderFrameIdTemp;
-                //current_frame_id = currentRanderServerFrameId;
+                uint32_t serverFrameId = 0;
+                std::memcpy(&serverFrameId, dataWithoutPacketTypeAndClientID.data(), sizeof(uint32_t));
+                currentRanderServerFrameId = (int)serverFrameId - RENDER_DELAY;
 
-                INFO_SERVER("Server send login info, my id is " + String::num_int64(client_id) + " | Initial frame ID: " + String::num_real(currentRanderServerFrameId), sender_ip.c_str(), sender_port, type);
+                INFO_SERVER("Server send login info, my id is " + String::num_int64(client_id) + " | Initial frame ID: " + String::num_int64(currentRanderServerFrameId), sender_ip.c_str(), sender_port, type);
+
+                uint64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::system_clock::now().time_since_epoch())
+                                    .count();
+
+                uint64_t rtt = now - timestamp_login_send;
+
+                float nbFramePassed = (static_cast<float>(rtt) / 2.f) / (1000.f / static_cast<float>(SERVER_FPS));
+                current_frame_id = (int)(static_cast<float>(serverFrameId) + nbFramePassed);
+
+                INFO("Estimated current frame ID based on RTT: " + String::num_int64(current_frame_id) + " | timestamp login send: " + String::num_int64(timestamp_login_send) + " | timestamp now: " + String::num_int64(now) + " | RTT: " + String::num_int64(rtt) + " ms | Frames passed: " + String::num_real(nbFramePassed));
+
                 break;
             }
             case PacketType::PING:
             {
-                if (dataWithoutPacketTypeAndClientID.size() < sizeof(PingRequestPacket))
+                if (dataWithoutPacketTypeAndClientID.size() < sizeof(PingResponsePacket))
                 {
                     UtilityFunctions::printerr("Received PING packet with insufficient data from ", sender_ip.c_str(), ":", sender_port);
                     break;
                 }
 
                 PingResponsePacket ping_resp;
-                std::memcpy(&ping_resp.id, dataWithoutPacketTypeAndClientID.data(), sizeof(uint32_t));
-                std::memcpy(&ping_resp.timestamp0, dataWithoutPacketTypeAndClientID.data() + sizeof(uint32_t), sizeof(uint64_t));
-                std::memcpy(&ping_resp.timestamp1, dataWithoutPacketTypeAndClientID.data() + sizeof(uint32_t) + sizeof(uint64_t), sizeof(uint64_t));
+                std::memcpy(&ping_resp.id,         dataWithoutPacketTypeAndClientID.data(),                                        sizeof(uint32_t));
+                std::memcpy(&ping_resp.timestamp0, dataWithoutPacketTypeAndClientID.data() + sizeof(uint32_t),                     sizeof(uint64_t));
+                std::memcpy(&ping_resp.timestamp1, dataWithoutPacketTypeAndClientID.data() + sizeof(uint32_t) + sizeof(uint64_t),  sizeof(uint64_t));
 
-                //calcule du RTT (ping)
                 uint64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
                                     std::chrono::system_clock::now().time_since_epoch())
                                     .count();
 
                 uint64_t rtt = now - ping_resp.timestamp0;
 
-                INFO_SERVER("Received PING from client " + String::num_int64(client_id) + " | RTT: " + String::num_int64(rtt) + " ms", sender_ip.c_str(), sender_port, type);
+                // One-way delay client → serveur (utile pour détecter une asymétrie réseau)
+                // timestamp1 = moment où le serveur a reçu/répondu
+                uint64_t oneWayDelay = ping_resp.timestamp1 - ping_resp.timestamp0;
+
+                float oneWayReturn = static_cast<float>(now - ping_resp.timestamp1);
+
+                INFO_SERVER("Received PING | RTT: " + String::num_int64(rtt) + " ms | One-way: " + String::num_int64(oneWayDelay) + " ms | One-way return: " + String::num_int64((uint64_t)oneWayReturn) + " ms", sender_ip.c_str(), sender_port, type);
+
+
+                float nbFramePassed = oneWayReturn / (1000.f / static_cast<float>(SERVER_FPS));
+                int expectedFrameId = currentRanderServerFrameId + (int)nbFramePassed;
+
+                int frameDiff = expectedFrameId - current_frame_id;
+
+                if (frameDiff > 5)
+                {
+                    INFO_SERVER("Client is behind by " + String::num_int64(frameDiff) + " frames. Expected: " + String::num_int64(expectedFrameId) + " | Current: " + String::num_int64(current_frame_id), sender_ip.c_str(), sender_port, type);
+                    // Accélération ici
+                }
+                else if (frameDiff < -5)
+                {
+                    INFO_SERVER("Client is ahead by " + String::num_int64(-frameDiff) + " frames. Expected: " + String::num_int64(expectedFrameId) + " | Current: " + String::num_int64(current_frame_id), sender_ip.c_str(), sender_port, type);
+                    // Ralentissement ici
+                }
+                else
+                {
+                    INFO_SERVER("Client frame is ok | diff: " + String::num_int64(frameDiff), sender_ip.c_str(), sender_port, type);
+                }
 
                 break;
             }
